@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# 敏感資料 — 不上傳到 GitHub
+參考/
+審查報告/
+*.pdf
+application_*.json
+comparison_*.json
+comparison_*.csv
+deficiency_dump*.txt
+規則庫.xlsx
+規則庫_範本.xlsx
+
+# Google API 金鑰 (絕對不可上傳)
+service_account.json
+*.json.key
+credentials.json
+token.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
