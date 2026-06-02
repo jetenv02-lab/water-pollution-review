@@ -300,6 +300,7 @@ with tab1:
 
     uploaded = st.file_uploader("選擇 PDF", type=["pdf"])
 
+    # 按鈕只負責「解析 + 存進 session」, 不負責顯示結果
     if uploaded is not None:
         st.success(f"已上傳: **{uploaded.name}** ({uploaded.size // 1024} KB)")
         if st.button("🚀 開始解析", type="primary"):
@@ -309,166 +310,176 @@ with tab1:
                     tf.write(pdf_bytes)
                     tmp_path = tf.name
                 try:
-                    # 1. 動態章節定位
-                    sections = locate_sections(tmp_path, verbose=False)
-                    # 2. 完整抽取
-                    app_data = extract_application(tmp_path, verbose=False)
+                    sections_local = locate_sections(tmp_path, verbose=False)
+                    app_data_local = extract_application(tmp_path, verbose=False)
                 finally:
                     try:
                         os.unlink(tmp_path)
                     except:
                         pass
-
-            st.success(f"✅ 抽取完成! 共 **{app_data['total_units']}** 個處理單元")
-
-            # ───────── 章節動態定位區塊 ─────────
-            st.subheader("📍 本文件章節定位")
-            st.caption("不同 PDF 頁碼會浮動。系統用『章節標題』找到各區段所在頁,而非寫死頁碼。")
-
-            sec_labels = {
-                "flow_diagram": ("廢(污)水流向示意圖", "🌊", "純圖片,需 OCR"),
-                "balance_diagram": ("水質水量平衡示意圖", "📊", "純圖片,需 OCR"),
-                "quality_data": ("進出水質資料表", "💧", "文字,已抽取"),
-                "facility_table": ("處理設施資料表", "🔧", "文字,已抽取"),
-                "raw_water": ("原廢水水質", "🧪", "文字"),
-                "discharge": ("放流口資料", "🚰", "文字"),
-                "emergency": ("緊急應變方法", "⚠", "文字"),
-                "sludge": ("污泥處理", "♻", "文字"),
-            }
-            section_rows = []
-            for sec_type, (label, emoji, note) in sec_labels.items():
-                pages = sections.get(sec_type, [])
-                if pages:
-                    section_rows.append({
-                        "區段": f"{emoji} {label}",
-                        "頁碼範圍": compress_ranges(pages),
-                        "頁數": len(pages),
-                        "狀態": note,
-                    })
-                else:
-                    section_rows.append({
-                        "區段": f"{emoji} {label}",
-                        "頁碼範圍": "(未找到)",
-                        "頁數": 0,
-                        "狀態": "未在文件中偵測到",
-                    })
-            st.dataframe(section_rows, use_container_width=True, hide_index=True)
-
-            # ───────── OCR 流向圖區塊 (存 session 供下方按鈕重用) ─────────
+            # 全部存進 session_state, 之後切換 selectbox 也不會消失
             ocr_target_pages = sorted(set(
-                sections.get("flow_diagram", []) +
-                sections.get("balance_diagram", [])
+                sections_local.get("flow_diagram", []) +
+                sections_local.get("balance_diagram", [])
             ))
-            st.session_state["_ocr_target_pages"] = ocr_target_pages
+            st.session_state["_sections"] = sections_local
+            st.session_state["_app_data"] = app_data_local
             st.session_state["_pdf_bytes"] = pdf_bytes
             st.session_state["_pdf_filename"] = uploaded.name
-            st.session_state["_app_data"] = app_data  # 供智能審查使用
+            st.session_state["_ocr_target_pages"] = ocr_target_pages
+            # 清掉舊的 OCR / 智能審查結果(換新 PDF 後應該重跑)
+            st.session_state.pop("_ocr_result", None)
+            st.session_state.pop("_check_findings", None)
 
-            # 統計卡片
-            total_design = sum(len(u["design_params"]) for u in app_data["units"].values())
-            total_measure = sum(len(u["measure_params"]) for u in app_data["units"].values())
-            total_eq = sum(len(u["equipment"]) for u in app_data["units"].values())
-            total_in = sum(len(u["influent"]) for u in app_data["units"].values())
-            total_out = sum(len(u["effluent"]) for u in app_data["units"].values())
+    # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
+    if st.session_state.get("_app_data"):
+        app_data = st.session_state["_app_data"]
+        sections = st.session_state["_sections"]
+        pdf_filename = st.session_state.get("_pdf_filename", "")
 
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("處理單元", app_data["total_units"])
-            c2.metric("設計參數", total_design)
-            c3.metric("量測參數", total_measure)
-            c4.metric("機具", total_eq)
-            c5.metric("水質流向", f"進{total_in}/出{total_out}")
+        st.success(f"✅ 抽取完成! 共 **{app_data['total_units']}** 個處理單元 · 來源: {pdf_filename}")
 
-            # 單元清單
-            st.subheader("📋 處理單元清單")
-            unit_rows = []
-            for code, info in sorted(app_data["units"].items()):
-                unit_rows.append({
-                    "代號": code,
-                    "原始名稱": info["name_in_doc"],
-                    "標準類型": info["std_tank"],
-                    "代碼": info.get("code_id", ""),
-                    "頁數": ", ".join(map(str, info["pages_found"][:3])),
-                    "設計": len(info["design_params"]),
-                    "量測": len(info["measure_params"]),
-                    "機具": len(info["equipment"]),
-                    "進": len(info["influent"]),
-                    "出": len(info["effluent"]),
+        # ───────── 章節動態定位區塊 ─────────
+        st.subheader("📍 本文件章節定位")
+        st.caption("不同 PDF 頁碼會浮動。系統用『章節標題』找到各區段所在頁,而非寫死頁碼。")
+
+        sec_labels = {
+            "flow_diagram": ("廢(污)水流向示意圖", "🌊", "純圖片,需 OCR"),
+            "balance_diagram": ("水質水量平衡示意圖", "📊", "純圖片,需 OCR"),
+            "quality_data": ("進出水質資料表", "💧", "文字,已抽取"),
+            "facility_table": ("處理設施資料表", "🔧", "文字,已抽取"),
+            "raw_water": ("原廢水水質", "🧪", "文字"),
+            "discharge": ("放流口資料", "🚰", "文字"),
+            "emergency": ("緊急應變方法", "⚠", "文字"),
+            "sludge": ("污泥處理", "♻", "文字"),
+        }
+        section_rows = []
+        for sec_type, (label, emoji, note) in sec_labels.items():
+            pages = sections.get(sec_type, [])
+            if pages:
+                section_rows.append({
+                    "區段": f"{emoji} {label}",
+                    "頁碼範圍": compress_ranges(pages),
+                    "頁數": len(pages),
+                    "狀態": note,
                 })
-            st.dataframe(unit_rows, use_container_width=True, hide_index=True)
+            else:
+                section_rows.append({
+                    "區段": f"{emoji} {label}",
+                    "頁碼範圍": "(未找到)",
+                    "頁數": 0,
+                    "狀態": "未在文件中偵測到",
+                })
+        st.dataframe(section_rows, use_container_width=True, hide_index=True)
 
-            # 篩選器 — 看單元詳情
-            st.subheader("🔎 單元詳情")
-            unit_codes = sorted(app_data["units"].keys())
-            selected = st.selectbox("選擇單元查看詳情", unit_codes)
-            if selected:
-                unit = app_data["units"][selected]
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(f"**單元代號**: {selected}")
-                    st.markdown(f"**原始名稱**: {unit['name_in_doc']}")
-                    st.markdown(f"**標準類型**: {unit['std_tank']}")
-                    st.markdown(f"**內部代碼**: {unit.get('code_id', '')}")
-                    st.markdown(f"**出現頁數**: {unit['pages_found']}")
-                with c2:
-                    if unit.get("design_params"):
-                        st.markdown("**設計操作參數**:")
-                        for k, v in unit["design_params"].items():
-                            st.markdown(f"- {k}: `{v.get('raw', '')}`")
-                    if unit.get("measure_params"):
-                        st.markdown("**量測操作參數**:")
-                        for k, v in unit["measure_params"].items():
-                            st.markdown(f"- {k}: `{v.get('raw', '')}`")
+        # 統計卡片
+        total_design = sum(len(u["design_params"]) for u in app_data["units"].values())
+        total_measure = sum(len(u["measure_params"]) for u in app_data["units"].values())
+        total_eq = sum(len(u["equipment"]) for u in app_data["units"].values())
+        total_in = sum(len(u["influent"]) for u in app_data["units"].values())
+        total_out = sum(len(u["effluent"]) for u in app_data["units"].values())
 
-                if unit.get("equipment"):
-                    st.markdown("**相關機具設施**:")
-                    eq_rows = [{"名稱": e["name"], "位置": e.get("位置", ""),
-                                "數量": e.get("數量", ""), "馬力(kW)": e.get("馬力_kW", "")}
-                               for e in unit["equipment"]]
-                    st.dataframe(eq_rows, use_container_width=True, hide_index=True)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("處理單元", app_data["total_units"])
+        c2.metric("設計參數", total_design)
+        c3.metric("量測參數", total_measure)
+        c4.metric("機具", total_eq)
+        c5.metric("水質流向", f"進{total_in}/出{total_out}")
 
-                if unit.get("influent"):
-                    st.markdown(f"**進流水質** ({len(unit['influent'])} 流向)")
-                    for infl_code, qdata in unit["influent"].items():
-                        st.caption(f"📥 {infl_code}")
-                        # 統一轉成字串避免 PyArrow 數字/字串混雜炸掉
-                        q_rows = [{"水質項目": str(k),
-                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
-                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
-                        st.dataframe(q_rows, use_container_width=True, hide_index=True)
+        # 單元清單
+        st.subheader("📋 處理單元清單")
+        unit_rows = []
+        for code, info in sorted(app_data["units"].items()):
+            unit_rows.append({
+                "代號": code,
+                "原始名稱": info["name_in_doc"],
+                "標準類型": info["std_tank"],
+                "代碼": info.get("code_id", ""),
+                "頁數": ", ".join(map(str, info["pages_found"][:3])),
+                "設計": len(info["design_params"]),
+                "量測": len(info["measure_params"]),
+                "機具": len(info["equipment"]),
+                "進": len(info["influent"]),
+                "出": len(info["effluent"]),
+            })
+        st.dataframe(unit_rows, use_container_width=True, hide_index=True)
 
-                if unit.get("effluent"):
-                    st.markdown(f"**出流水質** ({len(unit['effluent'])} 流向)")
-                    for effl_code, qdata in unit["effluent"].items():
-                        st.caption(f"📤 {effl_code}")
-                        q_rows = [{"水質項目": str(k),
-                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
-                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
-                        st.dataframe(q_rows, use_container_width=True, hide_index=True)
+        # 篩選器 — 看單元詳情 (現在用 session_state 保留選擇)
+        st.subheader("🔎 單元詳情")
+        unit_codes = sorted(app_data["units"].keys())
+        selected = st.selectbox(
+            "選擇單元查看詳情",
+            unit_codes,
+            key="_selected_unit",  # key 讓 Streamlit 自動把選擇存進 session
+        )
+        if selected and selected in app_data["units"]:
+            unit = app_data["units"][selected]
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**單元代號**: {selected}")
+                st.markdown(f"**原始名稱**: {unit['name_in_doc']}")
+                st.markdown(f"**標準類型**: {unit['std_tank']}")
+                st.markdown(f"**內部代碼**: {unit.get('code_id', '')}")
+                st.markdown(f"**出現頁數**: {unit['pages_found']}")
+            with c2:
+                if unit.get("design_params"):
+                    st.markdown("**設計操作參數**:")
+                    for k, v in unit["design_params"].items():
+                        st.markdown(f"- {k}: `{v.get('raw', '')}`")
+                if unit.get("measure_params"):
+                    st.markdown("**量測操作參數**:")
+                    for k, v in unit["measure_params"].items():
+                        st.markdown(f"- {k}: `{v.get('raw', '')}`")
 
-            # 下載
-            st.divider()
-            st.subheader("📥 下載抽取結果")
-            base_name = os.path.splitext(uploaded.name)[0]
+            if unit.get("equipment"):
+                st.markdown("**相關機具設施**:")
+                eq_rows = [{"名稱": str(e["name"]), "位置": str(e.get("位置", "")),
+                            "數量": str(e.get("數量", "")), "馬力(kW)": str(e.get("馬力_kW", ""))}
+                           for e in unit["equipment"]]
+                st.dataframe(eq_rows, use_container_width=True, hide_index=True)
 
-            col1, col2 = st.columns(2)
-            with col1:
-                excel_buf = build_unit_excel(app_data)
-                st.download_button(
-                    "📊 下載各單元詳細 Excel",
-                    data=excel_buf,
-                    file_name=f"{base_name}_單元資料.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-            with col2:
-                json_str = json.dumps(app_data, ensure_ascii=False, indent=2)
-                st.download_button(
-                    "💾 下載 JSON 結構化資料",
-                    data=json_str.encode("utf-8"),
-                    file_name=f"{base_name}_抽取結果.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
+            if unit.get("influent"):
+                st.markdown(f"**進流水質** ({len(unit['influent'])} 流向)")
+                for infl_code, qdata in unit["influent"].items():
+                    st.caption(f"📥 {infl_code}")
+                    q_rows = [{"水質項目": str(k),
+                               "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                               "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
+                    st.dataframe(q_rows, use_container_width=True, hide_index=True)
+
+            if unit.get("effluent"):
+                st.markdown(f"**出流水質** ({len(unit['effluent'])} 流向)")
+                for effl_code, qdata in unit["effluent"].items():
+                    st.caption(f"📤 {effl_code}")
+                    q_rows = [{"水質項目": str(k),
+                               "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                               "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
+                    st.dataframe(q_rows, use_container_width=True, hide_index=True)
+
+        # 下載
+        st.divider()
+        st.subheader("📥 下載抽取結果")
+        base_name = os.path.splitext(pdf_filename)[0] if pdf_filename else "result"
+
+        col1, col2 = st.columns(2)
+        with col1:
+            excel_buf = build_unit_excel(app_data)
+            st.download_button(
+                "📊 下載各單元詳細 Excel",
+                data=excel_buf,
+                file_name=f"{base_name}_單元資料.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with col2:
+            json_str = json.dumps(app_data, ensure_ascii=False, indent=2)
+            st.download_button(
+                "💾 下載 JSON 結構化資料",
+                data=json_str.encode("utf-8"),
+                file_name=f"{base_name}_抽取結果.json",
+                mime="application/json",
+                use_container_width=True,
+            )
 
     # ───────── 智能審查區塊 (自動學理檢查) ─────────
     if st.session_state.get("_app_data"):
@@ -478,8 +489,13 @@ with tab1:
 
         if st.button("執行智能審查", type="primary"):
             with st.spinner("執行學理檢查中..."):
-                findings = run_balance_checks(st.session_state["_app_data"])
+                st.session_state["_check_findings"] = run_balance_checks(
+                    st.session_state["_app_data"]
+                )
 
+        # 顯示 (基於 session 結果, 切換其他元件不會消失)
+        if st.session_state.get("_check_findings") is not None:
+            findings = st.session_state["_check_findings"]
             stats = {"不合理": 0, "待人工": 0, "錯誤": 0}
             for f in findings:
                 stats[f["嚴重度"]] = stats.get(f["嚴重度"], 0) + 1
@@ -489,7 +505,6 @@ with tab1:
             c2.metric("不合理 (應修正)", stats["不合理"])
             c3.metric("待人工複核", stats["待人工"])
 
-            # 不合理項
             not_ok = [f for f in findings if f["嚴重度"] == "不合理"]
             if not_ok:
                 st.markdown(f"### 不合理項目 ({len(not_ok)})")
@@ -500,17 +515,16 @@ with tab1:
                         st.markdown(f"**學理依據**")
                         st.caption(f["依據"])
 
-            # 待人工項
             manual = [f for f in findings if f["嚴重度"] == "待人工"]
             if manual:
                 st.markdown(f"### 待人工複核 ({len(manual)})")
                 manual_rows = [
                     {
-                        "類型": f["類型"],
-                        "單元": f["單元"],
-                        "標準槽體": f["標準槽體"],
-                        "對照項目": f["對照項目"],
-                        "描述": f["描述"],
+                        "類型": str(f["類型"]),
+                        "單元": str(f["單元"]),
+                        "標準槽體": str(f["標準槽體"]),
+                        "對照項目": str(f["對照項目"]),
+                        "描述": str(f["描述"]),
                     }
                     for f in manual
                 ]
@@ -519,7 +533,6 @@ with tab1:
             if not findings:
                 st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
 
-            # 下載結果
             findings_json = json.dumps({
                 "source": st.session_state.get("_pdf_filename", "?"),
                 "total_findings": len(findings),
@@ -551,7 +564,7 @@ with tab1:
                     tf.write(pdf_bytes_ocr)
                     tmp_path_ocr = tf.name
                 try:
-                    ocr_result = ocr_diagram_pages(
+                    st.session_state["_ocr_result"] = ocr_diagram_pages(
                         tmp_path_ocr, ocr_pages, verbose=False
                     )
                 finally:
@@ -560,6 +573,9 @@ with tab1:
                     except:
                         pass
 
+        # 顯示 (基於 session, 不會被 button rerun 抹掉)
+        if st.session_state.get("_ocr_result"):
+            ocr_result = st.session_state["_ocr_result"]
             if "error" in ocr_result:
                 st.error(f"OCR 失敗: {ocr_result['error']}")
             else:
@@ -577,7 +593,6 @@ with tab1:
                 c3.metric("加藥", summary["total_doses"])
                 c4.metric("含水率", summary["total_moistures"])
 
-                # 流量列表
                 if ocr_result.get("all_flows"):
                     st.markdown("**識別到的流量 Q (CMD):**")
                     flow_rows = [
@@ -586,7 +601,6 @@ with tab1:
                     ]
                     st.dataframe(flow_rows, use_container_width=True, hide_index=True)
 
-                # 加藥列表
                 if ocr_result.get("all_doses"):
                     st.markdown("**識別到的加藥量:**")
                     dose_rows = [
@@ -596,7 +610,6 @@ with tab1:
                     ]
                     st.dataframe(dose_rows, use_container_width=True, hide_index=True)
 
-                # 含水率列表
                 if ocr_result.get("all_moistures"):
                     st.markdown("**識別到的含水率:**")
                     mois_rows = [
@@ -605,16 +618,14 @@ with tab1:
                     ]
                     st.dataframe(mois_rows, use_container_width=True, hide_index=True)
 
-                # 單元清單
                 if ocr_result.get("all_units"):
                     with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
                         unit_rows = [
-                            {"代號": u["code"], "OCR 原文": u["text"]}
+                            {"代號": str(u["code"]), "OCR 原文": str(u["text"])}
                             for u in ocr_result["all_units"]
                         ]
                         st.dataframe(unit_rows, use_container_width=True, hide_index=True)
 
-                # 下載 OCR JSON
                 pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
                 base_ocr = os.path.splitext(pdf_name)[0]
                 ocr_json = json.dumps(ocr_result, ensure_ascii=False, indent=2)
