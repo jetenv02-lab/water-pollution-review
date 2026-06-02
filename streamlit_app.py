@@ -22,8 +22,9 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 直接 import 我們的 v2 抽取器
+# 直接 import 我們的 v2 抽取器 + 章節動態定位器
 from step2_extract_v2 import extract_application
+from step2b_locate_sections import locate_sections, compress_ranges
 
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
@@ -302,6 +303,9 @@ with tab1:
                     tf.write(pdf_bytes)
                     tmp_path = tf.name
                 try:
+                    # 1. 動態章節定位
+                    sections = locate_sections(tmp_path, verbose=False)
+                    # 2. 完整抽取
                     app_data = extract_application(tmp_path, verbose=False)
                 finally:
                     try:
@@ -310,6 +314,51 @@ with tab1:
                         pass
 
             st.success(f"✅ 抽取完成! 共 **{app_data['total_units']}** 個處理單元")
+
+            # ───────── 章節動態定位區塊 ─────────
+            st.subheader("📍 本文件章節定位")
+            st.caption("不同 PDF 頁碼會浮動。系統用『章節標題』找到各區段所在頁,而非寫死頁碼。")
+
+            sec_labels = {
+                "flow_diagram": ("廢(污)水流向示意圖", "🌊", "純圖片,需 OCR"),
+                "balance_diagram": ("水質水量平衡示意圖", "📊", "純圖片,需 OCR"),
+                "quality_data": ("進出水質資料表", "💧", "文字,已抽取"),
+                "facility_table": ("處理設施資料表", "🔧", "文字,已抽取"),
+                "raw_water": ("原廢水水質", "🧪", "文字"),
+                "discharge": ("放流口資料", "🚰", "文字"),
+                "emergency": ("緊急應變方法", "⚠", "文字"),
+                "sludge": ("污泥處理", "♻", "文字"),
+            }
+            section_rows = []
+            for sec_type, (label, emoji, note) in sec_labels.items():
+                pages = sections.get(sec_type, [])
+                if pages:
+                    section_rows.append({
+                        "區段": f"{emoji} {label}",
+                        "頁碼範圍": compress_ranges(pages),
+                        "頁數": len(pages),
+                        "狀態": note,
+                    })
+                else:
+                    section_rows.append({
+                        "區段": f"{emoji} {label}",
+                        "頁碼範圍": "(未找到)",
+                        "頁數": 0,
+                        "狀態": "未在文件中偵測到",
+                    })
+            st.dataframe(section_rows, use_container_width=True, hide_index=True)
+
+            # 提示使用者哪些區段是圖片需 OCR
+            ocr_needed = []
+            if sections.get("flow_diagram"):
+                ocr_needed.append(f"流向示意圖 ({compress_ranges(sections['flow_diagram'])})")
+            if sections.get("balance_diagram"):
+                ocr_needed.append(f"水質水量平衡圖 ({compress_ranges(sections['balance_diagram'])})")
+            if ocr_needed:
+                st.warning(
+                    f"⚠ 以下區段在原 PDF 為圖片格式,目前系統尚未啟用 OCR,需人工檢視:\n\n"
+                    + "\n".join(f"- {x}" for x in ocr_needed)
+                )
 
             # 統計卡片
             total_design = sum(len(u["design_params"]) for u in app_data["units"].values())
