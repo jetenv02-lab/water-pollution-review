@@ -426,18 +426,19 @@ with tab1:
                     st.markdown(f"**進流水質** ({len(unit['influent'])} 流向)")
                     for infl_code, qdata in unit["influent"].items():
                         st.caption(f"📥 {infl_code}")
-                        q_rows = [{"水質項目": k,
-                                   "濃度": v.get("濃度", v.get("範圍", "")),
-                                   "質量": v.get("質量", "")} for k, v in qdata.items()]
+                        # 統一轉成字串避免 PyArrow 數字/字串混雜炸掉
+                        q_rows = [{"水質項目": str(k),
+                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
                         st.dataframe(q_rows, use_container_width=True, hide_index=True)
 
                 if unit.get("effluent"):
                     st.markdown(f"**出流水質** ({len(unit['effluent'])} 流向)")
                     for effl_code, qdata in unit["effluent"].items():
                         st.caption(f"📤 {effl_code}")
-                        q_rows = [{"水質項目": k,
-                                   "濃度": v.get("濃度", v.get("範圍", "")),
-                                   "質量": v.get("質量", "")} for k, v in qdata.items()]
+                        q_rows = [{"水質項目": str(k),
+                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
                         st.dataframe(q_rows, use_container_width=True, hide_index=True)
 
             # 下載
@@ -586,7 +587,7 @@ with tab1:
                     if ocr_result.get("all_flows"):
                         st.markdown("**識別到的流量 Q (CMD):**")
                         flow_rows = [
-                            {"Q (CMD)": f["q"], "OCR 原文": f["text"]}
+                            {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
                             for f in ocr_result["all_flows"]
                         ]
                         st.dataframe(flow_rows, use_container_width=True, hide_index=True)
@@ -595,7 +596,8 @@ with tab1:
                     if ocr_result.get("all_doses"):
                         st.markdown("**識別到的加藥量:**")
                         dose_rows = [
-                            {"化學品": d["chemical"], "用量": d["amount"], "單位": d["unit"], "OCR 原文": d["text"]}
+                            {"化學品": str(d["chemical"]), "用量": str(d["amount"]),
+                             "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
                             for d in ocr_result["all_doses"]
                         ]
                         st.dataframe(dose_rows, use_container_width=True, hide_index=True)
@@ -604,7 +606,7 @@ with tab1:
                     if ocr_result.get("all_moistures"):
                         st.markdown("**識別到的含水率:**")
                         mois_rows = [
-                            {"含水率 (%)": m["value_pct"], "OCR 原文": m["text"]}
+                            {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
                             for m in ocr_result["all_moistures"]
                         ]
                         st.dataframe(mois_rows, use_container_width=True, hide_index=True)
