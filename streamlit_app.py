@@ -22,10 +22,11 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組
+# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組 + 質量平衡檢查器
 from step2_extract_v2 import extract_application
 from step2b_locate_sections import locate_sections, compress_ranges
 from step2c_ocr_diagram import ocr_diagram_pages
+from step3b_balance_check import run_balance_checks
 
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
@@ -357,6 +358,7 @@ with tab1:
             st.session_state["_ocr_target_pages"] = ocr_target_pages
             st.session_state["_pdf_bytes"] = pdf_bytes
             st.session_state["_pdf_filename"] = uploaded.name
+            st.session_state["_app_data"] = app_data  # 供智能審查使用
 
             # 統計卡片
             total_design = sum(len(u["design_params"]) for u in app_data["units"].values())
@@ -462,6 +464,69 @@ with tab1:
                     mime="application/json",
                     use_container_width=True,
                 )
+
+    # ───────── 智能審查區塊 (自動學理檢查) ─────────
+    if st.session_state.get("_app_data"):
+        st.divider()
+        st.subheader("智能審查結果")
+        st.caption("根據環工技師查核缺失歸納的學理規則,自動檢查申請文件中的不合理之處。")
+
+        if st.button("執行智能審查", type="primary"):
+            with st.spinner("執行學理檢查中..."):
+                findings = run_balance_checks(st.session_state["_app_data"])
+
+            stats = {"不合理": 0, "待人工": 0, "錯誤": 0}
+            for f in findings:
+                stats[f["嚴重度"]] = stats.get(f["嚴重度"], 0) + 1
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("總檢查項", len(findings))
+            c2.metric("不合理 (應修正)", stats["不合理"])
+            c3.metric("待人工複核", stats["待人工"])
+
+            # 不合理項
+            not_ok = [f for f in findings if f["嚴重度"] == "不合理"]
+            if not_ok:
+                st.markdown(f"### 不合理項目 ({len(not_ok)})")
+                for i, f in enumerate(not_ok, 1):
+                    with st.expander(f"{i}. [{f['類型']}] {f['單元']} ({f['標準槽體']}) - {f['對照項目']}"):
+                        st.markdown(f"**問題描述**")
+                        st.write(f["描述"])
+                        st.markdown(f"**學理依據**")
+                        st.caption(f["依據"])
+
+            # 待人工項
+            manual = [f for f in findings if f["嚴重度"] == "待人工"]
+            if manual:
+                st.markdown(f"### 待人工複核 ({len(manual)})")
+                manual_rows = [
+                    {
+                        "類型": f["類型"],
+                        "單元": f["單元"],
+                        "標準槽體": f["標準槽體"],
+                        "對照項目": f["對照項目"],
+                        "描述": f["描述"],
+                    }
+                    for f in manual
+                ]
+                st.dataframe(manual_rows, use_container_width=True, hide_index=True)
+
+            if not findings:
+                st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
+
+            # 下載結果
+            findings_json = json.dumps({
+                "source": st.session_state.get("_pdf_filename", "?"),
+                "total_findings": len(findings),
+                "stats": stats,
+                "findings": findings,
+            }, ensure_ascii=False, indent=2)
+            st.download_button(
+                "下載審查結果 JSON",
+                data=findings_json.encode("utf-8"),
+                file_name="智能審查結果.json",
+                mime="application/json",
+            )
 
     # ───────── OCR 流向圖區塊 (放在 if uploaded 外, 用 session_state) ─────────
     if st.session_state.get("_ocr_target_pages"):
