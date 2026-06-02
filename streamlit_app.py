@@ -539,101 +539,91 @@ with tab1:
         st.subheader("OCR 解析流向圖 / 水量平衡圖")
         ocr_pages = st.session_state["_ocr_target_pages"]
         st.caption(
-            f"流向示意圖與水量平衡圖在原 PDF 為圖片,可用 OCR 讀出單元代號、流量、加藥量、含水率。"
+            f"自動辨識所有流向示意圖與水量平衡圖,讀出單元代號、流量、加藥量、含水率。"
             f" 共 {len(ocr_pages)} 頁 (頁 {compress_ranges(ocr_pages)})。"
             f" 預估時間: {len(ocr_pages)*15} ~ {len(ocr_pages)*30} 秒。"
         )
 
-        # 讓使用者選擇要 OCR 的頁面範圍 (預設全選)
-        selected_ocr_pages = st.multiselect(
-            "選擇要 OCR 的頁面 (可篩選縮短時間)",
-            options=ocr_pages,
-            default=ocr_pages[:5] if len(ocr_pages) > 5 else ocr_pages,
-        )
-
         if st.button("執行 OCR", type="secondary"):
-            if not selected_ocr_pages:
-                st.warning("請至少選擇一頁")
-            else:
-                with st.spinner(f"OCR 處理中... ({len(selected_ocr_pages)} 頁,可能需要幾分鐘)"):
-                    pdf_bytes_ocr = st.session_state["_pdf_bytes"]
-                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-                        tf.write(pdf_bytes_ocr)
-                        tmp_path_ocr = tf.name
+            with st.spinner(f"OCR 處理中... ({len(ocr_pages)} 頁,可能需要幾分鐘)"):
+                pdf_bytes_ocr = st.session_state["_pdf_bytes"]
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+                    tf.write(pdf_bytes_ocr)
+                    tmp_path_ocr = tf.name
+                try:
+                    ocr_result = ocr_diagram_pages(
+                        tmp_path_ocr, ocr_pages, verbose=False
+                    )
+                finally:
                     try:
-                        ocr_result = ocr_diagram_pages(
-                            tmp_path_ocr, selected_ocr_pages, verbose=False
-                        )
-                    finally:
-                        try:
-                            os.unlink(tmp_path_ocr)
-                        except:
-                            pass
+                        os.unlink(tmp_path_ocr)
+                    except:
+                        pass
 
-                if "error" in ocr_result:
-                    st.error(f"OCR 失敗: {ocr_result['error']}")
-                else:
-                    summary = ocr_result["summary"]
-                    st.success(
-                        f"OCR 完成! 識別 {summary['total_units']} 個單元、"
-                        f"{summary['total_flows']} 個流量、"
-                        f"{summary['total_doses']} 個加藥、"
-                        f"{summary['total_moistures']} 個含水率"
-                    )
+            if "error" in ocr_result:
+                st.error(f"OCR 失敗: {ocr_result['error']}")
+            else:
+                summary = ocr_result["summary"]
+                st.success(
+                    f"OCR 完成! 識別 {summary['total_units']} 個單元、"
+                    f"{summary['total_flows']} 個流量、"
+                    f"{summary['total_doses']} 個加藥、"
+                    f"{summary['total_moistures']} 個含水率"
+                )
 
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("單元", summary["total_units"])
-                    c2.metric("流量(Q)", summary["total_flows"])
-                    c3.metric("加藥", summary["total_doses"])
-                    c4.metric("含水率", summary["total_moistures"])
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("單元", summary["total_units"])
+                c2.metric("流量(Q)", summary["total_flows"])
+                c3.metric("加藥", summary["total_doses"])
+                c4.metric("含水率", summary["total_moistures"])
 
-                    # 流量列表
-                    if ocr_result.get("all_flows"):
-                        st.markdown("**識別到的流量 Q (CMD):**")
-                        flow_rows = [
-                            {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
-                            for f in ocr_result["all_flows"]
+                # 流量列表
+                if ocr_result.get("all_flows"):
+                    st.markdown("**識別到的流量 Q (CMD):**")
+                    flow_rows = [
+                        {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
+                        for f in ocr_result["all_flows"]
+                    ]
+                    st.dataframe(flow_rows, use_container_width=True, hide_index=True)
+
+                # 加藥列表
+                if ocr_result.get("all_doses"):
+                    st.markdown("**識別到的加藥量:**")
+                    dose_rows = [
+                        {"化學品": str(d["chemical"]), "用量": str(d["amount"]),
+                         "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
+                        for d in ocr_result["all_doses"]
+                    ]
+                    st.dataframe(dose_rows, use_container_width=True, hide_index=True)
+
+                # 含水率列表
+                if ocr_result.get("all_moistures"):
+                    st.markdown("**識別到的含水率:**")
+                    mois_rows = [
+                        {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
+                        for m in ocr_result["all_moistures"]
+                    ]
+                    st.dataframe(mois_rows, use_container_width=True, hide_index=True)
+
+                # 單元清單
+                if ocr_result.get("all_units"):
+                    with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
+                        unit_rows = [
+                            {"代號": u["code"], "OCR 原文": u["text"]}
+                            for u in ocr_result["all_units"]
                         ]
-                        st.dataframe(flow_rows, use_container_width=True, hide_index=True)
+                        st.dataframe(unit_rows, use_container_width=True, hide_index=True)
 
-                    # 加藥列表
-                    if ocr_result.get("all_doses"):
-                        st.markdown("**識別到的加藥量:**")
-                        dose_rows = [
-                            {"化學品": str(d["chemical"]), "用量": str(d["amount"]),
-                             "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
-                            for d in ocr_result["all_doses"]
-                        ]
-                        st.dataframe(dose_rows, use_container_width=True, hide_index=True)
-
-                    # 含水率列表
-                    if ocr_result.get("all_moistures"):
-                        st.markdown("**識別到的含水率:**")
-                        mois_rows = [
-                            {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
-                            for m in ocr_result["all_moistures"]
-                        ]
-                        st.dataframe(mois_rows, use_container_width=True, hide_index=True)
-
-                    # 單元清單
-                    if ocr_result.get("all_units"):
-                        with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
-                            unit_rows = [
-                                {"代號": u["code"], "OCR 原文": u["text"]}
-                                for u in ocr_result["all_units"]
-                            ]
-                            st.dataframe(unit_rows, use_container_width=True, hide_index=True)
-
-                    # 下載 OCR JSON
-                    pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
-                    base_ocr = os.path.splitext(pdf_name)[0]
-                    ocr_json = json.dumps(ocr_result, ensure_ascii=False, indent=2)
-                    st.download_button(
-                        "下載 OCR 結果 JSON",
-                        data=ocr_json.encode("utf-8"),
-                        file_name=f"{base_ocr}_ocr.json",
-                        mime="application/json",
-                    )
+                # 下載 OCR JSON
+                pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
+                base_ocr = os.path.splitext(pdf_name)[0]
+                ocr_json = json.dumps(ocr_result, ensure_ascii=False, indent=2)
+                st.download_button(
+                    "下載 OCR 結果 JSON",
+                    data=ocr_json.encode("utf-8"),
+                    file_name=f"{base_ocr}_ocr.json",
+                    mime="application/json",
+                )
 
 with tab2:
     st.subheader("規則庫內容")
