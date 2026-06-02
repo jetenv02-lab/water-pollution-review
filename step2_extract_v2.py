@@ -1,0 +1,433 @@
+# -*- coding: utf-8 -*-
+"""Step 2 v2: 成熟版申請 PDF 抽取器。
+
+重大修正(相對 v1):
+1. 支援全形破折號 T01－01 (不只是半形 T01-01)
+2. 從『廢(污)水(前)處理設施資料表』表頭(含「處理單元名稱：xxx 序號：T01－01」)抽取
+   單元的標準名稱與序號(而不是用啟發式關鍵字猜)
+3. 從『處理單元之進出水質資料』(含「單元序號：T01-01」「進流水流編號：WTB...」)抽取
+   進出流水質數據(濃度、質量)
+4. 抽取設計參數(液位/停留時間/有效容量)、量測參數(pH/加藥量)、機具設施(液位計/攪拌機)
+5. 過濾雜訊(如 D97 這種誤抓的代號)
+
+輸出:
+{
+  "source_pdf": "...",
+  "units": {
+    "T01-01": {
+      "raw_code": "T01-01",
+      "name_in_doc": "中和池",           ← 從 PDF 表頭抽
+      "std_tank": "中和池",
+      "code_id": "120",
+      "size": {"長": "1", "寬": "1.2", "高": "1.2", "有效水深": "1.2", "有效容量": "1.44"},
+      "design_params": {"攪拌機轉速": "180~220 rpm"},
+      "measure_params": {"pH": "6~9", "加藥量(NaOH)": "63.77~637.66 kg/日"},
+      "equipment": [{"name": "pH計", "位置": "池內", "數量": 1}, ...],
+      "influent": {  ← 進流水質
+        "WTB01-01-1": {"硝酸鹽氮": {"濃度": 50, "質量": 2.45}, ...}
+      },
+      "effluent": {  ← 出流水質
+        "WTA01-01-1": {"硝酸鹽氮": {"濃度": 50, "質量": 30.428}, ...}
+      },
+      "pages_found": [19, 72]
+    },
+    ...
+  }
+}
+"""
+import json
+import os
+import re
+import sys
+from datetime import datetime
+import pdfplumber
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = os.path.join(BASE, "參考", "需審查之文件")
+
+# 全形破折號 normalize
+DASH_VARIANTS = ["－", "─", "—", "–", "‐", "‑"]
+
+
+def normalize_text(text):
+    """半形化破折號 + 移除多餘空白。"""
+    if not text:
+        return ""
+    s = text
+    for d in DASH_VARIANTS:
+        s = s.replace(d, "-")
+    return s
+
+
+# 槽體類型關鍵字 (按優先序匹配)
+TANK_CLASSIFIERS = [
+    ("pH調整暨快混", "pH調整暨快混池"),
+    ("pH調整", "pH調整槽"),
+    ("快混", "快混槽"),
+    ("慢混", "慢混池"),
+    ("沉澱", "沉澱池"),
+    ("沉降", "沉澱池"),
+    ("中和", "中和池"),
+    ("放流", "放流池"),
+    ("曝氣", "曝氣槽"),
+    ("活性污泥", "曝氣槽"),
+    ("還原", "還原池"),
+    ("氧化", "氧化池"),
+    ("陽離子交換", "離子交換樹脂塔"),
+    ("陰離子交換", "離子交換樹脂塔"),
+    ("離子交換", "離子交換樹脂塔"),
+    ("活性碳吸附", "活性碳吸附塔"),
+    ("活性碳", "活性碳吸附塔"),
+    ("批次反應", "批次反應槽"),
+    ("反應槽", "批次反應槽"),
+    ("污泥濃縮", "污泥濃縮池"),
+    ("濃縮", "濃縮槽"),
+    ("污泥脫水", "脫水機"),
+    ("污泥烘乾", "污泥烘乾機"),
+    ("脫水", "脫水機"),
+    ("壓濾", "脫水機"),
+    ("砂濾", "砂濾塔"),
+    ("過濾", "砂濾塔"),
+    ("廢水收集", "廢水收集池"),
+    ("廢液收集", "廢液收集池"),
+    ("廢水調整", "廢水調整池"),
+    ("廢液調整", "廢液調整池"),
+    ("調勻", "調勻池"),
+    ("調節", "調節池"),
+    ("中間池", "中間池"),
+    ("濾液", "濾液池"),
+    ("貯留", "貯留槽"),
+    ("暫存", "暫存槽"),
+    ("污泥儲", "污泥儲槽"),
+    ("污泥貯", "污泥儲槽"),
+    ("收集池", "廢水收集池"),
+    ("調整池", "廢水調整池"),
+]
+
+
+def classify_tank(name_in_doc):
+    """根據 PDF 中讀到的單元名稱,歸類到標準槽體類型。"""
+    if not name_in_doc:
+        return "未分類"
+    for kw, std in TANK_CLASSIFIERS:
+        if kw in name_in_doc:
+            return std
+    return name_in_doc.strip() or "未分類"
+
+
+# ─────────────────── 各區段的解析 ───────────────────
+
+# 頁 72+: (一)處理單元名稱: xxx 序號: T01－01 代碼: 120
+# 注意 pdfplumber 抽出來可能是 "T01- 01"(破折號後有空格), 需放寬
+UNIT_HEADER_PATTERN = re.compile(
+    r"\(一\)\s*處理單元名稱[：:\s]+(.+?)\s+序號[：:\s]+(T\d{2}\s*-\s*\d{2})\s+代碼[：:\s]+(\d+)"
+)
+
+# 頁 19+: 單元序號：T01-01
+UNIT_SEQ_PATTERN = re.compile(r"單元序號[：:]\s*(T\d{2}-\d{2})")
+INFL_CODE_PATTERN = re.compile(r"進流水流編號[：:]\s*(\S+)")
+EFFL_CODE_PATTERN = re.compile(r"出流水流編號[：:]\s*(\S*)")
+
+# 尺寸列: 長/直徑 寬 高 有效水深 有效容量 數量
+SIZE_DIM_PATTERN = re.compile(
+    r"(\d+(?:\.\d+)?)\s*\(?\s*公尺\s*\)?\s+"
+    r"(\d+(?:\.\d+)?)\s*\(?\s*公尺?\s*\)?\s+"
+    r"(\d+(?:\.\d+)?)\s*\(?\s*公尺?\s*\)?"
+)
+
+# (二)設計操作參數 / (三)量測操作參數 中的數值列
+# 例: "攪拌機轉速 09 180～ 220 [547]轉／分(rpm) 機具規格"
+# 例: "pH值 03 6～ 9 [000]無單位 pH計 1次/日"
+PARAM_LINE_PATTERN = re.compile(
+    r"^(.+?)\s+(\d{2})\s+(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)\s+\[(\d+)\](.+)$"
+)
+
+# (四)機具設施: pH計 池內 1 0.37 KW
+EQUIPMENT_PATTERN = re.compile(
+    r"^([^\d\s][^\d]*?)\s+([^\d\s]+)\s+(\d+)\s+(?:(\d+(?:\.\d+)?)\s*)?[Kk][Ww]"
+)
+
+# 水質列: "硝酸鹽氮 50 2.45 50 30.428"
+# 或不完整: "硝酸鹽氮 50 6.387"
+QUALITY_LINE_PATTERN = re.compile(
+    r"^(\D+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*(?:(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?))?\s*$"
+)
+
+
+def find_section_pages(pdf):
+    """掃所有頁,找出兩種關鍵區段:
+       - 'facility' 頁: 含『(一)處理單元名稱：xxx 序號：T01－XX』
+       - 'quality' 頁: 含『單元序號：T01-XX』 或 『進出處理單元之水質資料』
+    """
+    facility_pages = []  # [(page_index, page_text)]
+    quality_pages = []
+    for i, page in enumerate(pdf.pages):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            continue
+        norm = normalize_text(text)
+        if "(一)處理單元名稱" in norm and "序號" in norm:
+            facility_pages.append((i, norm))
+        if "單元序號" in norm or "進出處理單元之水質資料" in norm:
+            quality_pages.append((i, norm))
+    return facility_pages, quality_pages
+
+
+def parse_facility_page(text, page_index):
+    """解析一頁『處理設施資料表』，回傳 unit dict 或 None。"""
+    # 找單元表頭
+    m = UNIT_HEADER_PATTERN.search(text)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    code = re.sub(r"\s+", "", m.group(2))  # T01- 01 → T01-01
+    code_id = m.group(3).strip()  # 120
+
+    unit = {
+        "raw_code": code,
+        "name_in_doc": name,
+        "std_tank": classify_tank(name),
+        "code_id": code_id,
+        "size": {},
+        "design_params": {},
+        "measure_params": {},
+        "equipment": [],
+        "influent": {},
+        "effluent": {},
+        "pages_found": [page_index + 1],
+    }
+
+    # 把頁面切成 4 段: (二)設計、(三)量測、(四)機具
+    parts = re.split(r"\((二|三|四|五)\)", text)
+    # parts = [前面..., '二', 設計內容, '三', 量測內容, '四', 機具內容, '五', ...]
+
+    section_map = {}
+    for j in range(1, len(parts) - 1, 2):
+        section_map[parts[j]] = parts[j + 1]
+
+    # (二) 設計操作參數
+    if "二" in section_map:
+        for ln in section_map["二"].split("\n"):
+            mp = PARAM_LINE_PATTERN.match(ln.strip())
+            if mp:
+                pname = mp.group(1).strip()
+                pmin, pmax = mp.group(3), mp.group(4)
+                tail = mp.group(6).strip()
+                unit["design_params"][pname] = {
+                    "min": float(pmin), "max": float(pmax),
+                    "raw": f"{pmin}~{pmax} {tail}"
+                }
+
+    # (三) 量測操作參數
+    if "三" in section_map:
+        for ln in section_map["三"].split("\n"):
+            mp = PARAM_LINE_PATTERN.match(ln.strip())
+            if mp:
+                pname = mp.group(1).strip()
+                pmin, pmax = mp.group(3), mp.group(4)
+                tail = mp.group(6).strip()
+                unit["measure_params"][pname] = {
+                    "min": float(pmin), "max": float(pmax),
+                    "raw": f"{pmin}~{pmax} {tail}"
+                }
+
+    # (四) 機具設施
+    if "四" in section_map:
+        for ln in section_map["四"].split("\n"):
+            me = EQUIPMENT_PATTERN.match(ln.strip())
+            if me:
+                eqname = me.group(1).strip()
+                # 避免抓到表頭 "名稱"
+                if eqname in ("名稱", "設施名稱", ""):
+                    continue
+                pos = me.group(2)
+                qty = int(me.group(3))
+                hp = float(me.group(4)) if me.group(4) else None
+                unit["equipment"].append({
+                    "name": eqname, "位置": pos, "數量": qty, "馬力_kW": hp
+                })
+
+    return unit
+
+
+def parse_quality_page(text):
+    """解析一頁『進出水質資料』，回傳 [(unit_code, infl_code, effl_code, quality_data)]。"""
+    results = []
+    # 把整頁文字依「進出處理單元之水質資料」切成多個區塊
+    # 因為一頁可能含多個單元的進出流資料
+    blocks = re.split(r"(單元序號[：:]\s*T\d{2}-\d{2})", text)
+    current_unit = None
+    for i, blk in enumerate(blocks):
+        m_unit = UNIT_SEQ_PATTERN.match(blk)
+        if m_unit:
+            current_unit = m_unit.group(1).strip()
+            continue
+        if not current_unit:
+            continue
+        # 在 blk 裡找 進流水流/出流水流 編號
+        m_in = INFL_CODE_PATTERN.search(blk)
+        m_out = EFFL_CODE_PATTERN.search(blk)
+        infl_code = m_in.group(1) if m_in else None
+        effl_code = m_out.group(1) if (m_out and m_out.group(1)) else None
+
+        # 抽水質列
+        infl_q, effl_q = {}, {}
+        in_data = False
+        for ln in blk.split("\n"):
+            ln = ln.strip()
+            if "濃度" in ln and "質量" in ln:
+                in_data = True
+                continue
+            if not in_data or not ln:
+                continue
+            # 把全形空白也當分隔
+            ln_norm = re.sub(r"[\s\u3000]+", " ", ln)
+            # 4 個數字 = 進+出
+            mq = re.match(
+                r"^([^\d\s][^\d]*?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*$",
+                ln_norm
+            )
+            if mq:
+                item = mq.group(1).strip()
+                infl_q[item] = {"濃度": float(mq.group(2)), "質量": float(mq.group(3))}
+                effl_q[item] = {"濃度": float(mq.group(4)), "質量": float(mq.group(5))}
+                continue
+            # 2 個數字 = 單側 (沒出流)
+            mq2 = re.match(
+                r"^([^\d\s][^\d]*?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*$",
+                ln_norm
+            )
+            if mq2:
+                item = mq2.group(1).strip()
+                infl_q[item] = {"濃度": float(mq2.group(2)), "質量": float(mq2.group(3))}
+                continue
+            # pH/水溫: "pH值 1 ~ 7 - 6 ~ 9 -"
+            mph = re.match(
+                r"^(pH值|水溫.*?)\s+([\d\.]+)\s*[~～-]\s*([\d\.]+)\s*-?\s*([\d\.]+)\s*[~～-]\s*([\d\.]+)\s*-?\s*$",
+                ln_norm
+            )
+            if mph:
+                item = mph.group(1).strip()
+                infl_q[item] = {"範圍": f"{mph.group(2)}~{mph.group(3)}"}
+                effl_q[item] = {"範圍": f"{mph.group(4)}~{mph.group(5)}"}
+
+        if current_unit:
+            results.append({
+                "unit_code": current_unit,
+                "infl_code": infl_code,
+                "effl_code": effl_code,
+                "infl_quality": infl_q,
+                "effl_quality": effl_q,
+            })
+    return results
+
+
+# ─────────────────── 主函式 ───────────────────
+
+
+def extract_application(pdf_path, verbose=True):
+    if verbose:
+        print(f"=== 開啟 PDF: {pdf_path} ===")
+
+    units = {}
+
+    with pdfplumber.open(pdf_path) as pdf:
+        total = len(pdf.pages)
+        if verbose:
+            print(f"總頁數: {total}")
+            print("掃描章節...")
+
+        facility_pages, quality_pages = find_section_pages(pdf)
+        if verbose:
+            print(f"  處理設施資料表: {len(facility_pages)} 頁")
+            print(f"  進出水質資料: {len(quality_pages)} 頁")
+
+        # 解析設施資料表 → 取單元 metadata + 設計/量測/機具
+        for page_idx, text in facility_pages:
+            unit = parse_facility_page(text, page_idx)
+            if unit:
+                code = unit["raw_code"]
+                if code in units:
+                    # 已存在:合併 (有時跨頁)
+                    units[code]["pages_found"].append(page_idx + 1)
+                    units[code]["design_params"].update(unit["design_params"])
+                    units[code]["measure_params"].update(unit["measure_params"])
+                    units[code]["equipment"].extend(unit["equipment"])
+                else:
+                    units[code] = unit
+
+        # 解析進出水質 → 加進對應單元
+        for page_idx, text in quality_pages:
+            block_results = parse_quality_page(text)
+            for r in block_results:
+                code = r["unit_code"]
+                if code not in units:
+                    # 水質頁有提到但設施資料表沒登錄 → 建立精簡 unit
+                    units[code] = {
+                        "raw_code": code,
+                        "name_in_doc": "(僅水質資料)",
+                        "std_tank": "未分類",
+                        "code_id": "",
+                        "size": {},
+                        "design_params": {},
+                        "measure_params": {},
+                        "equipment": [],
+                        "influent": {},
+                        "effluent": {},
+                        "pages_found": [page_idx + 1],
+                    }
+                if (page_idx + 1) not in units[code]["pages_found"]:
+                    units[code]["pages_found"].append(page_idx + 1)
+                if r["infl_code"]:
+                    units[code]["influent"][r["infl_code"]] = r["infl_quality"]
+                if r["effl_code"]:
+                    units[code]["effluent"][r["effl_code"]] = r["effl_quality"]
+
+    return {
+        "source_pdf": os.path.basename(pdf_path),
+        "extracted_at": datetime.now().isoformat(),
+        "total_units": len(units),
+        "units": units,
+    }
+
+
+def main():
+    if len(sys.argv) >= 2:
+        pdf_path = sys.argv[1]
+    else:
+        pdfs = [f for f in os.listdir(APP_DIR) if f.lower().endswith(".pdf")]
+        if not pdfs:
+            print(f"在 {APP_DIR} 找不到 PDF")
+            return
+        pdf_path = os.path.join(APP_DIR, pdfs[0])
+
+    if not os.path.exists(pdf_path):
+        print(f"找不到 PDF: {pdf_path}")
+        return
+
+    result = extract_application(pdf_path)
+
+    # 輸出 JSON
+    base = os.path.splitext(os.path.basename(pdf_path))[0]
+    out_path = os.path.join(BASE, f"application_{base}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    print(f"\n已輸出 JSON: {out_path}")
+
+    # 印摘要
+    print(f"\n=== 摘要 ===")
+    print(f"共偵測 {result['total_units']} 個處理單元")
+    for code, info in sorted(result["units"].items()):
+        n_design = len(info["design_params"])
+        n_measure = len(info["measure_params"])
+        n_eq = len(info["equipment"])
+        n_in = len(info["influent"])
+        n_out = len(info["effluent"])
+        print(f"  {code} {info['name_in_doc']:30s} → {info['std_tank']:15s} "
+              f"頁{info['pages_found'][:3]} | 設計{n_design} 量測{n_measure} "
+              f"機具{n_eq} 進{n_in} 出{n_out}")
+
+
+if __name__ == "__main__":
+    main()
