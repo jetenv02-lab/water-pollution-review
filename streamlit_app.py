@@ -31,7 +31,7 @@ from step3b_balance_check import run_balance_checks
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
 st.set_page_config(
-    page_title="水措審查系統 v2",
+    page_title="水措審查系統 v3",
     page_icon="💧",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -48,7 +48,7 @@ st.markdown("""
     }
     .main-header h1 { margin: 0; font-size: 28px; }
     .main-header p { margin: 4px 0 0 0; opacity: 0.9; }
-    .v2-badge {
+    .version-badge {
         background: #38a169;
         color: white;
         padding: 2px 10px;
@@ -68,8 +68,11 @@ st.markdown("""
 
 st.markdown("""
 <div class="main-header">
-    <h1>💧 水措審查系統 <span class="v2-badge">v2</span></h1>
+    <h1>水措審查系統 <span class="version-badge">v3</span></h1>
     <p>自動化「水污染防治措施」申請文件審查 · 比對環工技師查核缺失資料庫</p>
+    <p style="font-size: 13px; opacity: 0.85; margin-top: 6px;">
+        v3 新增: 章節動態定位 · OCR 流向圖解析 · 智能審查 (學理檢查)
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -266,15 +269,16 @@ def build_unit_excel(app_data):
 rules, rules_by_tank = load_rules()
 
 with st.sidebar:
-    st.header("📋 系統狀態")
+    st.header("系統狀態")
     st.metric("規則總數", len(rules))
     st.metric("槽體分類數", len(rules_by_tank))
     st.divider()
-    st.markdown("**版本資訊**")
-    st.text("v2: 成熟版抽取器")
-    st.text("✓ 38 單元覆蓋")
-    st.text("✓ 設計/量測/機具/水質")
-    st.text("✗ 流向圖 OCR (待做)")
+    st.markdown("**v3 版本能力**")
+    st.text("- 38 單元完整抽取")
+    st.text("- 設計/量測/機具/水質")
+    st.text("- 章節動態定位")
+    st.text("- OCR 流向圖解析")
+    st.text("- 智能審查 (學理檢查)")
     st.divider()
     st.markdown("**專案連結**")
     st.markdown("[GitHub](https://github.com/jetenv02-lab/water-pollution-review)")
@@ -283,14 +287,14 @@ tab1, tab2, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "📖 �
 
 with tab1:
     st.subheader("上傳申請文件 PDF")
-    st.caption("v2 抽取器會解析: 處理設施資料表 + 進出水質資料表。流向示意圖(頁9-13)若為圖片,目前暫無法解析,需後續加入 OCR。")
+    st.caption("v3 抽取器會解析: 處理設施資料表 + 進出水質資料表。流向示意圖與水量平衡示意圖可透過 OCR 自動讀取。")
 
     st.markdown("""
     <div class="ocr-warning">
-    <strong>⚠ v2 限制告知:</strong><br>
-    水量平衡示意圖(頁 9-13)在原 PDF 通常是圖片,本版尚未啟用 OCR。
-    要做完整質量平衡審查需要該圖的流量/加藥/含水率資料,目前該部分需人工檢視。
-    所有「處理設施資料表」「進出水質資料表」的文字內容皆已成功抽取。
+    <strong>v3 已支援的審查能力:</strong><br>
+    - 自動定位本份文件的水量平衡圖與流向示意圖頁碼(不寫死)<br>
+    - OCR 讀取圖片頁面: 單元代號、流量 Q、加藥量、含水率<br>
+    - 智能審查: 質量平衡守恆、快混槽不應展現重金屬去除、沉澱池溢流率等學理檢查
     </div>
     """, unsafe_allow_html=True)
 
@@ -664,19 +668,37 @@ with tab2:
         )
 
 with tab3:
-    st.subheader("水措審查系統 v2 — 使用說明")
+    st.subheader("水措審查系統 v3 — 使用說明")
     st.markdown("""
-### v2 主要改進
+### v3 版本能力
 
-| 項目 | v1 | v2 |
-|------|----|----|
-| 單元偵測覆蓋率 | 10/38 (26%) | **38/38 (100%)** |
-| 單元類型歸類 | 多錯(放流池/廢水調整池) | **完全正確** |
-| 設計參數抽取 | ❌ 無 | **✅ 17 筆** |
-| 量測參數抽取 | ❌ 無 | **✅ 15 筆** |
-| 機具設施抽取 | ❌ 無 | **✅ 83 筆** |
-| 水質數據抽取 | ❌ 無 | **✅ 35 進流 / 35 出流** |
-| 全形破折號處理 | ❌ 不支援 | **✅ 自動轉換** |
+| 項目 | 狀態 |
+|------|------|
+| 單元偵測覆蓋率 | **100%** (38/38) |
+| 單元類型歸類 | **完全正確** (中和池/沉澱池/慢混池...) |
+| 設計操作參數 | **已抽取** (停留時間/有效容量/攪拌轉速...) |
+| 量測操作參數 | **已抽取** (pH/加藥量/DO...) |
+| 機具設施 | **已抽取** (pH計/液位計/攪拌機 + 馬力數) |
+| 進出流水質 | **已抽取** (各 35 流向、含 21+ 水質項目) |
+| 章節動態定位 | **已支援** (不寫死頁碼,各家工廠都適用) |
+| 流向圖 OCR | **已支援** (RapidOCR 中文識別) |
+| 智能審查 | **已支援** (學理檢查、不再全部待人工) |
+
+### 使用流程
+
+1. **上傳 PDF** → 點「開始解析」
+2. **看「本文件章節定位」** → 系統會列出本份文件每個區段在第幾頁
+3. **看「處理單元清單」** → 38 個單元 + 對應標準槽體類型
+4. **執行 OCR** → 對流向圖/水量平衡圖跑 OCR、抽出流量/加藥/含水率
+5. **執行智能審查** → 自動列出不合理項目 + 學理依據
+
+### 智能審查涵蓋的學理規則
+
+- **質量守恆**: 溶解性物質(硝酸鹽/硼/Cl-)不應在無濃縮機制單元自行濃縮
+- **去除位置學理**: 快混槽/pH調整槽無固液分離,不應展現重金屬去除
+- **pH 槽特性**: pH 調整槽除 pH 外,其他水質應不變
+- **沉澱設計**: 表面溢流率應 < 50 m3/m2-d
+- **必要機具**: 各槽體應有的液位計/pH計/排泥等設施
 
 ### 抽取邏輯
 
@@ -685,24 +707,14 @@ with tab3:
    - 進出水質資料表（含「單元序號：T01-01」、「進流水流編號：WTB...」、「出流水流編號：WTA...」）
 2. **解析設施資料表**: 抽 (二)設計參數、(三)量測參數、(四)機具設施
 3. **解析水質表**: 抽各水質項目的濃度、質量、pH 範圍
+4. **OCR 流向圖**: 用 RapidOCR 讀取圖片頁面 → 抽單元代號/Q/加藥/含水率
 
-### 已知限制
+### 剩餘限制
 
-#### 🚫 水量平衡示意圖(頁 9-13)無法自動解析
-
-原 PDF 該頁面是圖片,pdfplumber 抽不到文字。後續需引入:
-- **OCR** (Tesseract / PaddleOCR) - 免費但中文準確度有限
-- **Vision API** (Claude/GPT-4V) - 最準但需 API key
-
-#### 🚫 比對引擎尚未針對新結構優化
-
-目前比對引擎(step3)還在用舊邏輯,只機械化解析 pH 範圍。新版抽取已能提供:
-- 完整設計參數(可比對停留時間、有效容量、加藥量等)
-- 完整水質進出流(可做質量平衡檢查、檢測溶解性物質自行濃縮)
-- 完整機具清單(可檢查液位計、流量計等是否齊備)
-
-下一階段會擴充比對引擎,利用這些新增資訊做更深入的審查。
+- 規則庫目前 53 筆,完整版 235 筆萃取中
+- 比對引擎可繼續擴充更多學理規則
+- 大型 PDF (>100MB) 建議用本地版執行
 """)
 
 st.divider()
-st.caption("水措審查系統 v2 · 抽取器升級版 · [GitHub](https://github.com/jetenv02-lab/water-pollution-review)")
+st.caption("水措審查系統 v3 · 章節定位 + OCR + 智能審查 · [GitHub](https://github.com/jetenv02-lab/water-pollution-review)")
