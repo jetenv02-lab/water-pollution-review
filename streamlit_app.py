@@ -554,42 +554,104 @@ with tab1:
     if st.session_state.get("_check_findings") is not None:
         st.divider()
         st.subheader("智能審查結果")
-        st.caption("根據環工技師查核缺失歸納 + jetwatersystem 設計準則的學理規則。")
+        st.caption(
+            "根據環工技師 299 筆查核缺失 + jetwatersystem 設計準則的學理規則。"
+            " 結果依「審查類型」分組,涵蓋質量平衡/機具設施/設計參數/去除率等多面向。"
+        )
 
         findings = st.session_state["_check_findings"]
-        stats = {"不合理": 0, "待人工": 0, "錯誤": 0}
-        for f in findings:
-            stats[f["嚴重度"]] = stats.get(f["嚴重度"], 0) + 1
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("總檢查項", len(findings))
-        c2.metric("不合理 (應修正)", stats["不合理"])
-        c3.metric("待人工複核", stats["待人工"])
+        # 統計 (合併「不合理」和「待人工」, 改用「審查類型」分組)
+        from collections import Counter
+        type_counter = Counter(f.get("類型", "其他") for f in findings)
+        sev_counter = Counter(f.get("嚴重度", "?") for f in findings)
 
-        not_ok = [f for f in findings if f["嚴重度"] == "不合理"]
-        if not_ok:
-            st.markdown(f"### 不合理項目 ({len(not_ok)})")
-            for i, f in enumerate(not_ok, 1):
-                with st.expander(f"{i}. [{f['類型']}] {f['單元']} ({f['標準槽體']}) - {f['對照項目']}"):
-                    st.markdown(f"**問題描述**")
-                    st.write(f["描述"])
-                    st.markdown(f"**學理依據**")
-                    st.caption(f["依據"])
+        # 上方四張卡片: 總覽 + 三種嚴重度
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📋 總審查項", len(findings))
+        c2.metric("🔴 明顯不合理", sev_counter.get("不合理", 0),
+                  help="系統能 100% 自動判定為違反學理 (如快混槽展現重金屬去除)")
+        c3.metric("🟡 應人工複核", sev_counter.get("待人工", 0),
+                  help="系統找出規則涉及的具體單元數值,需技師人工判讀是否合理")
+        c4.metric("📊 涵蓋類型", len(type_counter))
 
-        manual = [f for f in findings if f["嚴重度"] == "待人工"]
-        if manual:
-            st.markdown(f"### 待人工複核 ({len(manual)})")
-            manual_rows = [
-                {
-                    "類型": str(f["類型"]),
-                    "單元": str(f["單元"]),
-                    "標準槽體": str(f["標準槽體"]),
-                    "對照項目": str(f["對照項目"]),
-                    "描述": str(f["描述"]),
-                }
-                for f in manual
+        st.divider()
+
+        # 篩選器
+        col1, col2, col3 = st.columns([2, 2, 3])
+        with col1:
+            filter_type = st.selectbox(
+                "依類型篩選",
+                ["(全部)"] + sorted(type_counter.keys()),
+                key="_filter_type",
+            )
+        with col2:
+            unique_units = sorted({f["單元"] for f in findings})
+            filter_unit = st.selectbox(
+                "依單元篩選",
+                ["(全部)"] + unique_units,
+                key="_filter_unit",
+            )
+        with col3:
+            filter_kw = st.text_input("關鍵字搜尋 (描述/規則)", key="_filter_kw")
+
+        filtered = findings
+        if filter_type != "(全部)":
+            filtered = [f for f in filtered if f.get("類型") == filter_type]
+        if filter_unit != "(全部)":
+            filtered = [f for f in filtered if f.get("單元") == filter_unit]
+        if filter_kw:
+            kw = filter_kw.lower()
+            filtered = [
+                f for f in filtered
+                if kw in str(f.get("描述", "")).lower()
+                or kw in str(f.get("依據", "")).lower()
             ]
-            st.dataframe(manual_rows, use_container_width=True, hide_index=True)
+
+        st.caption(f"顯示 {len(filtered)} / {len(findings)} 筆")
+
+        # 依類型分組顯示
+        by_type = defaultdict(list)
+        for f in filtered:
+            by_type[f.get("類型", "其他")].append(f)
+
+        # 類型顯示順序 (重要的放前面)
+        type_priority = [
+            "質量平衡", "去除率", "設計參數", "機具設施", "水質標準",
+            "操作條件", "流向/示意圖", "文件一致性", "單位/有效位數", "其他"
+        ]
+        ordered_types = (
+            [t for t in type_priority if t in by_type]
+            + [t for t in sorted(by_type.keys()) if t not in type_priority]
+        )
+
+        for type_name in ordered_types:
+            items = by_type[type_name]
+            if not items:
+                continue
+            # 嚴重度色碼 emoji
+            sev_in_group = Counter(f["嚴重度"] for f in items)
+            sev_summary_parts = []
+            if sev_in_group.get("不合理"):
+                sev_summary_parts.append(f"🔴 {sev_in_group['不合理']} 不合理")
+            if sev_in_group.get("待人工"):
+                sev_summary_parts.append(f"🟡 {sev_in_group['待人工']} 待人工")
+            sev_summary = " · ".join(sev_summary_parts)
+
+            with st.expander(f"**{type_name}** ({len(items)} 筆) — {sev_summary}", expanded=True):
+                # 每個類型用表格顯示
+                rows = []
+                for f in items:
+                    sev_emoji = {"不合理": "🔴", "待人工": "🟡"}.get(f["嚴重度"], "⚪")
+                    rows.append({
+                        "嚴重": sev_emoji,
+                        "單元": str(f["單元"]),
+                        "標準槽體": str(f["標準槽體"]),
+                        "對照項目": str(f["對照項目"]),
+                        "描述": str(f["描述"])[:150],
+                        "依據": str(f.get("依據", ""))[:80],
+                    })
+                st.dataframe(rows, use_container_width=True, hide_index=True)
 
         if not findings:
             st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
