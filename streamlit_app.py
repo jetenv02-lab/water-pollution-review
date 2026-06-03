@@ -274,6 +274,14 @@ with st.sidebar:
     st.header("系統狀態")
     st.metric("規則總數", len(rules))
     st.metric("槽體分類數", len(rules_by_tank))
+    # 顯示 CSV 檔案修改時間 + 大小, 方便確認是否吃到最新 CSV
+    if os.path.exists(CSV_PATH):
+        import datetime as _dt
+        mtime = _dt.datetime.fromtimestamp(os.path.getmtime(CSV_PATH))
+        st.caption(f"CSV: {os.path.getsize(CSV_PATH)//1024} KB · {mtime.strftime('%m-%d %H:%M')}")
+    if st.button("🔄 清快取重載", help="若顯示舊資料,點此清快取"):
+        st.cache_data.clear()
+        st.rerun()
     st.divider()
     st.markdown("**v3 版本能力**")
     st.text("- 38 單元完整抽取")
