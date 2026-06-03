@@ -302,36 +302,91 @@ with tab1:
 
     uploaded = st.file_uploader("選擇 PDF", type=["pdf"])
 
-    # 按鈕只負責「解析 + 存進 session」, 不負責顯示結果
+    # 一鍵跑完整流程: 抽取 + OCR + 智能審查
     if uploaded is not None:
         st.success(f"已上傳: **{uploaded.name}** ({uploaded.size // 1024} KB)")
-        if st.button("🚀 開始解析", type="primary"):
-            with st.spinner("📖 解析 PDF 中... (大檔案可能需要 1-3 分鐘)"):
-                pdf_bytes = uploaded.read()
-                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-                    tf.write(pdf_bytes)
-                    tmp_path = tf.name
+
+        # 事業類別選擇 (供智能審查使用) - 提前到按鈕之前讓使用者一次設定
+        business_type = st.selectbox(
+            "事業類別 (用於檢查申報項目是否完整)",
+            ["(不檢查)"] + list(BUSINESS_TYPES.keys()),
+            key="_business_type",
+            help="選了之後智能審查會檢查該事業類別應申報的項目是否漏項",
+        )
+
+        if st.button("🚀 開始完整審查", type="primary",
+                     help="一次跑完: 抽取單元 → 章節定位 → OCR 流向圖 → 智能審查"):
+            # 暫存 PDF 到 disk 供多步驟使用
+            pdf_bytes = uploaded.read()
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+                tf.write(pdf_bytes)
+                tmp_path = tf.name
+
+            # 進度條
+            progress = st.progress(0, text="準備中...")
+            status = st.empty()
+
+            try:
+                # ─── Step 1: 章節定位 + 單元抽取 ───
+                status.info("Step 1/3: 解析 PDF 章節與處理單元...")
+                progress.progress(10, text="解析 PDF 文字內容...")
+                sections_local = locate_sections(tmp_path, verbose=False)
+                progress.progress(30, text="抽取處理單元結構化資料...")
+                app_data_local = extract_application(tmp_path, verbose=False)
+                progress.progress(40, text=f"完成 Step 1: 共 {app_data_local['total_units']} 個處理單元")
+
+                # 存到 session
+                ocr_target_pages = sorted(set(
+                    sections_local.get("flow_diagram", []) +
+                    sections_local.get("balance_diagram", [])
+                ))
+                st.session_state["_sections"] = sections_local
+                st.session_state["_app_data"] = app_data_local
+                st.session_state["_pdf_bytes"] = pdf_bytes
+                st.session_state["_pdf_filename"] = uploaded.name
+                st.session_state["_ocr_target_pages"] = ocr_target_pages
+
+                # ─── Step 2: OCR (若有流向圖頁) ───
+                if ocr_target_pages:
+                    n_ocr_pages = len(ocr_target_pages)
+                    status.info(f"Step 2/3: OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖 (約 {n_ocr_pages*15}~{n_ocr_pages*30} 秒)...")
+                    progress.progress(50, text=f"執行 OCR ({n_ocr_pages} 頁)...")
+                    ocr_result = ocr_diagram_pages(tmp_path, ocr_target_pages, verbose=False)
+                    st.session_state["_ocr_result"] = ocr_result
+                    if "error" not in ocr_result:
+                        summary = ocr_result["summary"]
+                        progress.progress(75, text=f"完成 Step 2: 識別 {summary['total_units']} 單元/{summary['total_flows']} 流量/{summary['total_doses']} 加藥")
+                    else:
+                        progress.progress(75, text="完成 Step 2: OCR 略過")
+                else:
+                    st.session_state.pop("_ocr_result", None)
+                    progress.progress(75, text="Step 2/3: 無流向圖頁面,跳過 OCR")
+
+                # ─── Step 3: 智能審查 (質量平衡 + 學理檢查) ───
+                status.info("Step 3/3: 執行智能審查 (質量平衡 + 學理規則)...")
+                progress.progress(85, text="跑質量平衡檢查...")
+                findings_basic = run_balance_checks(app_data_local)
+                progress.progress(92, text="跑進階學理檢查 (jetwatersystem 設計準則)...")
+                bt = None if business_type == "(不檢查)" else business_type
+                findings_adv = run_advanced_checks(app_data_local, business_type=bt)
+                st.session_state["_check_findings"] = findings_basic + findings_adv
+
+                # 完成
+                progress.progress(100, text="全部完成!")
+                stats = {"不合理": 0, "待人工": 0}
+                for f in st.session_state["_check_findings"]:
+                    sev = f.get("嚴重度")
+                    if sev in stats:
+                        stats[sev] += 1
+                status.success(
+                    f"✅ 審查完成! 共 {app_data_local['total_units']} 單元 · "
+                    f"找出 {stats['不合理']} 項不合理 / {stats['待人工']} 項待人工複核"
+                )
+            finally:
                 try:
-                    sections_local = locate_sections(tmp_path, verbose=False)
-                    app_data_local = extract_application(tmp_path, verbose=False)
-                finally:
-                    try:
-                        os.unlink(tmp_path)
-                    except:
-                        pass
-            # 全部存進 session_state, 之後切換 selectbox 也不會消失
-            ocr_target_pages = sorted(set(
-                sections_local.get("flow_diagram", []) +
-                sections_local.get("balance_diagram", [])
-            ))
-            st.session_state["_sections"] = sections_local
-            st.session_state["_app_data"] = app_data_local
-            st.session_state["_pdf_bytes"] = pdf_bytes
-            st.session_state["_pdf_filename"] = uploaded.name
-            st.session_state["_ocr_target_pages"] = ocr_target_pages
-            # 清掉舊的 OCR / 智能審查結果(換新 PDF 後應該重跑)
-            st.session_state.pop("_ocr_result", None)
-            st.session_state.pop("_check_findings", None)
+                    os.unlink(tmp_path)
+                except:
+                    pass
 
     # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
     if st.session_state.get("_app_data"):
@@ -483,175 +538,131 @@ with tab1:
                 use_container_width=True,
             )
 
-    # ───────── 智能審查區塊 (自動學理檢查) ─────────
-    if st.session_state.get("_app_data"):
+    # ───────── 智能審查結果顯示 (基於 session, 由「開始完整審查」按鈕產生) ─────────
+    if st.session_state.get("_check_findings") is not None:
         st.divider()
         st.subheader("智能審查結果")
-        st.caption("根據環工技師查核缺失歸納 + jetwatersystem 設計準則的學理規則,自動檢查申請文件中的不合理之處。")
+        st.caption("根據環工技師查核缺失歸納 + jetwatersystem 設計準則的學理規則。")
 
-        # 事業類別選擇 (供進階檢查使用)
-        col_bt, col_btn = st.columns([2, 1])
-        with col_bt:
-            business_type = st.selectbox(
-                "事業類別 (用於檢查申報項目是否完整)",
-                ["(不檢查)"] + list(BUSINESS_TYPES.keys()),
-                key="_business_type",
-            )
-        with col_btn:
-            st.text("")  # 對齊
-            st.text("")
-            run_check = st.button("執行智能審查", type="primary")
+        findings = st.session_state["_check_findings"]
+        stats = {"不合理": 0, "待人工": 0, "錯誤": 0}
+        for f in findings:
+            stats[f["嚴重度"]] = stats.get(f["嚴重度"], 0) + 1
 
-        if run_check:
-            with st.spinner("執行學理檢查中..."):
-                # 同時跑質量平衡檢查 + 進階學理檢查
-                findings_basic = run_balance_checks(st.session_state["_app_data"])
-                bt = None if business_type == "(不檢查)" else business_type
-                findings_adv = run_advanced_checks(st.session_state["_app_data"], business_type=bt)
-                st.session_state["_check_findings"] = findings_basic + findings_adv
+        c1, c2, c3 = st.columns(3)
+        c1.metric("總檢查項", len(findings))
+        c2.metric("不合理 (應修正)", stats["不合理"])
+        c3.metric("待人工複核", stats["待人工"])
 
-        # 顯示 (基於 session 結果, 切換其他元件不會消失)
-        if st.session_state.get("_check_findings") is not None:
-            findings = st.session_state["_check_findings"]
-            stats = {"不合理": 0, "待人工": 0, "錯誤": 0}
-            for f in findings:
-                stats[f["嚴重度"]] = stats.get(f["嚴重度"], 0) + 1
+        not_ok = [f for f in findings if f["嚴重度"] == "不合理"]
+        if not_ok:
+            st.markdown(f"### 不合理項目 ({len(not_ok)})")
+            for i, f in enumerate(not_ok, 1):
+                with st.expander(f"{i}. [{f['類型']}] {f['單元']} ({f['標準槽體']}) - {f['對照項目']}"):
+                    st.markdown(f"**問題描述**")
+                    st.write(f["描述"])
+                    st.markdown(f"**學理依據**")
+                    st.caption(f["依據"])
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("總檢查項", len(findings))
-            c2.metric("不合理 (應修正)", stats["不合理"])
-            c3.metric("待人工複核", stats["待人工"])
+        manual = [f for f in findings if f["嚴重度"] == "待人工"]
+        if manual:
+            st.markdown(f"### 待人工複核 ({len(manual)})")
+            manual_rows = [
+                {
+                    "類型": str(f["類型"]),
+                    "單元": str(f["單元"]),
+                    "標準槽體": str(f["標準槽體"]),
+                    "對照項目": str(f["對照項目"]),
+                    "描述": str(f["描述"]),
+                }
+                for f in manual
+            ]
+            st.dataframe(manual_rows, use_container_width=True, hide_index=True)
 
-            not_ok = [f for f in findings if f["嚴重度"] == "不合理"]
-            if not_ok:
-                st.markdown(f"### 不合理項目 ({len(not_ok)})")
-                for i, f in enumerate(not_ok, 1):
-                    with st.expander(f"{i}. [{f['類型']}] {f['單元']} ({f['標準槽體']}) - {f['對照項目']}"):
-                        st.markdown(f"**問題描述**")
-                        st.write(f["描述"])
-                        st.markdown(f"**學理依據**")
-                        st.caption(f["依據"])
+        if not findings:
+            st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
 
-            manual = [f for f in findings if f["嚴重度"] == "待人工"]
-            if manual:
-                st.markdown(f"### 待人工複核 ({len(manual)})")
-                manual_rows = [
-                    {
-                        "類型": str(f["類型"]),
-                        "單元": str(f["單元"]),
-                        "標準槽體": str(f["標準槽體"]),
-                        "對照項目": str(f["對照項目"]),
-                        "描述": str(f["描述"]),
-                    }
-                    for f in manual
-                ]
-                st.dataframe(manual_rows, use_container_width=True, hide_index=True)
-
-            if not findings:
-                st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
-
-            findings_json = json.dumps({
-                "source": st.session_state.get("_pdf_filename", "?"),
-                "total_findings": len(findings),
-                "stats": stats,
-                "findings": findings,
-            }, ensure_ascii=False, indent=2)
-            st.download_button(
-                "下載審查結果 JSON",
-                data=findings_json.encode("utf-8"),
-                file_name="智能審查結果.json",
-                mime="application/json",
-            )
-
-    # ───────── OCR 流向圖區塊 (放在 if uploaded 外, 用 session_state) ─────────
-    if st.session_state.get("_ocr_target_pages"):
-        st.divider()
-        st.subheader("OCR 解析流向圖 / 水量平衡圖")
-        ocr_pages = st.session_state["_ocr_target_pages"]
-        st.caption(
-            f"自動辨識所有流向示意圖與水量平衡圖,讀出單元代號、流量、加藥量、含水率。"
-            f" 共 {len(ocr_pages)} 頁 (頁 {compress_ranges(ocr_pages)})。"
-            f" 預估時間: {len(ocr_pages)*15} ~ {len(ocr_pages)*30} 秒。"
+        findings_json = json.dumps({
+            "source": st.session_state.get("_pdf_filename", "?"),
+            "total_findings": len(findings),
+            "stats": stats,
+            "findings": findings,
+        }, ensure_ascii=False, indent=2)
+        st.download_button(
+            "下載審查結果 JSON",
+            data=findings_json.encode("utf-8"),
+            file_name="智能審查結果.json",
+            mime="application/json",
         )
 
-        if st.button("執行 OCR", type="secondary"):
-            with st.spinner(f"OCR 處理中... ({len(ocr_pages)} 頁,可能需要幾分鐘)"):
-                pdf_bytes_ocr = st.session_state["_pdf_bytes"]
-                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-                    tf.write(pdf_bytes_ocr)
-                    tmp_path_ocr = tf.name
-                try:
-                    st.session_state["_ocr_result"] = ocr_diagram_pages(
-                        tmp_path_ocr, ocr_pages, verbose=False
-                    )
-                finally:
-                    try:
-                        os.unlink(tmp_path_ocr)
-                    except:
-                        pass
+    # ───────── OCR 流向圖結果顯示 (由「開始完整審查」按鈕產生) ─────────
+    if st.session_state.get("_ocr_result"):
+        st.divider()
+        st.subheader("OCR 解析流向圖 / 水量平衡圖")
+        ocr_pages = st.session_state.get("_ocr_target_pages", [])
+        if ocr_pages:
+            st.caption(f"OCR 解析了 {len(ocr_pages)} 頁 (頁 {compress_ranges(ocr_pages)})")
 
-        # 顯示 (基於 session, 不會被 button rerun 抹掉)
-        if st.session_state.get("_ocr_result"):
-            ocr_result = st.session_state["_ocr_result"]
-            if "error" in ocr_result:
-                st.error(f"OCR 失敗: {ocr_result['error']}")
-            else:
-                summary = ocr_result["summary"]
-                st.success(
-                    f"OCR 完成! 識別 {summary['total_units']} 個單元、"
-                    f"{summary['total_flows']} 個流量、"
-                    f"{summary['total_doses']} 個加藥、"
-                    f"{summary['total_moistures']} 個含水率"
-                )
+        ocr_result = st.session_state["_ocr_result"]
+        if "error" in ocr_result:
+            st.error(f"OCR 失敗: {ocr_result['error']}")
+        else:
+            summary = ocr_result["summary"]
+            st.success(
+                f"OCR 完成! 識別 {summary['total_units']} 個單元、"
+                f"{summary['total_flows']} 個流量、"
+                f"{summary['total_doses']} 個加藥、"
+                f"{summary['total_moistures']} 個含水率"
+            )
 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("單元", summary["total_units"])
-                c2.metric("流量(Q)", summary["total_flows"])
-                c3.metric("加藥", summary["total_doses"])
-                c4.metric("含水率", summary["total_moistures"])
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("單元", summary["total_units"])
+            c2.metric("流量(Q)", summary["total_flows"])
+            c3.metric("加藥", summary["total_doses"])
+            c4.metric("含水率", summary["total_moistures"])
 
-                if ocr_result.get("all_flows"):
-                    st.markdown("**識別到的流量 Q (CMD):**")
-                    flow_rows = [
-                        {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
-                        for f in ocr_result["all_flows"]
+            if ocr_result.get("all_flows"):
+                st.markdown("**識別到的流量 Q (CMD):**")
+                flow_rows = [
+                    {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
+                    for f in ocr_result["all_flows"]
+                ]
+                st.dataframe(flow_rows, use_container_width=True, hide_index=True)
+
+            if ocr_result.get("all_doses"):
+                st.markdown("**識別到的加藥量:**")
+                dose_rows = [
+                    {"化學品": str(d["chemical"]), "用量": str(d["amount"]),
+                     "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
+                    for d in ocr_result["all_doses"]
+                ]
+                st.dataframe(dose_rows, use_container_width=True, hide_index=True)
+
+            if ocr_result.get("all_moistures"):
+                st.markdown("**識別到的含水率:**")
+                mois_rows = [
+                    {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
+                    for m in ocr_result["all_moistures"]
+                ]
+                st.dataframe(mois_rows, use_container_width=True, hide_index=True)
+
+            if ocr_result.get("all_units"):
+                with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
+                    unit_rows = [
+                        {"代號": str(u["code"]), "OCR 原文": str(u["text"])}
+                        for u in ocr_result["all_units"]
                     ]
-                    st.dataframe(flow_rows, use_container_width=True, hide_index=True)
+                    st.dataframe(unit_rows, use_container_width=True, hide_index=True)
 
-                if ocr_result.get("all_doses"):
-                    st.markdown("**識別到的加藥量:**")
-                    dose_rows = [
-                        {"化學品": str(d["chemical"]), "用量": str(d["amount"]),
-                         "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
-                        for d in ocr_result["all_doses"]
-                    ]
-                    st.dataframe(dose_rows, use_container_width=True, hide_index=True)
-
-                if ocr_result.get("all_moistures"):
-                    st.markdown("**識別到的含水率:**")
-                    mois_rows = [
-                        {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
-                        for m in ocr_result["all_moistures"]
-                    ]
-                    st.dataframe(mois_rows, use_container_width=True, hide_index=True)
-
-                if ocr_result.get("all_units"):
-                    with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
-                        unit_rows = [
-                            {"代號": str(u["code"]), "OCR 原文": str(u["text"])}
-                            for u in ocr_result["all_units"]
-                        ]
-                        st.dataframe(unit_rows, use_container_width=True, hide_index=True)
-
-                pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
-                base_ocr = os.path.splitext(pdf_name)[0]
-                ocr_json = json.dumps(ocr_result, ensure_ascii=False, indent=2)
-                st.download_button(
-                    "下載 OCR 結果 JSON",
-                    data=ocr_json.encode("utf-8"),
-                    file_name=f"{base_ocr}_ocr.json",
-                    mime="application/json",
-                )
+            pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
+            base_ocr = os.path.splitext(pdf_name)[0]
+            ocr_json = json.dumps(ocr_result, ensure_ascii=False, indent=2)
+            st.download_button(
+                "下載 OCR 結果 JSON",
+                data=ocr_json.encode("utf-8"),
+                file_name=f"{base_ocr}_ocr.json",
+                mime="application/json",
+            )
 
 with tab2:
     st.subheader("規則庫內容")
