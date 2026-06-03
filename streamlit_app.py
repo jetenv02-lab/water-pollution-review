@@ -329,15 +329,45 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     st.divider()
+
+    # ───────── 本次 session 審查歷史 ─────────
+    history = st.session_state.get("_review_history", [])
+    if history:
+        st.markdown("**📋 本次審查歷史**")
+        st.caption("(本次瀏覽 session, 重新整理會清空)")
+        for i, h in enumerate(history[:5]):
+            with st.container(border=True):
+                fname_short = h["filename"]
+                if len(fname_short) > 22:
+                    fname_short = fname_short[:20] + "..."
+                st.caption(f"⏱ {h['time']} · {h['elapsed_sec']}s")
+                st.markdown(f"**{fname_short}**")
+                st.caption(
+                    f"{h['units']} 單元 · 🔴 {h['unreasonable']} · 🟡 {h['manual']}"
+                )
+        if len(history) > 5:
+            st.caption(f"還有 {len(history)-5} 筆紀錄...")
+        if st.button("🗑 清除歷史", key="_clear_history"):
+            st.session_state.pop("_review_history", None)
+            st.rerun()
+        st.divider()
+
     st.markdown("**v3 版本能力**")
     st.text("- 38 單元完整抽取")
     st.text("- 設計/量測/機具/水質")
     st.text("- 章節動態定位")
     st.text("- OCR 流向圖解析")
     st.text("- 智能審查 (學理檢查)")
+    st.text("- 水流串接圖")
     st.divider()
     st.markdown("**專案連結**")
     st.markdown("[GitHub](https://github.com/jetenv02-lab/water-pollution-review)")
+
+    # 顯示 import 失敗模組 (debug 用)
+    if _import_errors:
+        with st.expander(f"⚠ 模組載入問題 ({len(_import_errors)})"):
+            for mod, err in _import_errors:
+                st.caption(f"**{mod}**: {err[:150]}")
 
 tab1, tab2, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "📖 使用說明"])
 
@@ -376,18 +406,32 @@ with tab1:
                 tf.write(pdf_bytes)
                 tmp_path = tf.name
 
-            # 進度條
+            # 進度條 + 剩餘時間估算
+            import time as _time
+            t_start = _time.time()
+
+            def _eta(percent_done):
+                """根據已耗時 + 進度估算剩餘秒數。"""
+                if percent_done <= 0:
+                    return "?"
+                elapsed = _time.time() - t_start
+                total_est = elapsed / (percent_done / 100)
+                remaining = max(0, total_est - elapsed)
+                if remaining < 60:
+                    return f"約 {remaining:.0f} 秒"
+                return f"約 {remaining/60:.1f} 分鐘"
+
             progress = st.progress(0, text="準備中...")
             status = st.empty()
 
             try:
                 # ─── Step 1: 章節定位 + 單元抽取 ───
                 status.info("Step 1/3: 解析 PDF 章節與處理單元...")
-                progress.progress(10, text="解析 PDF 文字內容...")
+                progress.progress(10, text=f"[{_eta(10)}] 解析 PDF 文字內容...")
                 sections_local = locate_sections(tmp_path, verbose=False)
-                progress.progress(30, text="抽取處理單元結構化資料...")
+                progress.progress(30, text=f"[{_eta(30)}] 抽取處理單元結構化資料...")
                 app_data_local = extract_application(tmp_path, verbose=False)
-                progress.progress(40, text=f"完成 Step 1: 共 {app_data_local['total_units']} 個處理單元")
+                progress.progress(40, text=f"[{_eta(40)}] 完成 Step 1: 共 {app_data_local['total_units']} 個處理單元")
 
                 # 存到 session
                 ocr_target_pages = sorted(set(
@@ -405,33 +449,34 @@ with tab1:
                 # ─── Step 2: OCR (若有流向圖頁) ───
                 if ocr_target_pages:
                     n_ocr_pages = len(ocr_target_pages)
-                    status.info(f"Step 2/3: OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖 (約 {n_ocr_pages*15}~{n_ocr_pages*30} 秒)...")
-                    progress.progress(50, text=f"執行 OCR ({n_ocr_pages} 頁)...")
+                    status.info(f"Step 2/3: OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖")
+                    progress.progress(50, text=f"[{_eta(50)}] 執行 OCR ({n_ocr_pages} 頁)...")
                     ocr_result = ocr_diagram_pages(tmp_path, ocr_target_pages, verbose=False)
                     st.session_state["_ocr_result"] = ocr_result
                     if "error" not in ocr_result:
                         summary = ocr_result["summary"]
-                        progress.progress(75, text=f"完成 Step 2: 識別 {summary['total_units']} 單元/{summary['total_flows']} 流量/{summary['total_doses']} 加藥")
+                        progress.progress(75, text=f"[{_eta(75)}] 完成 Step 2: 識別 {summary['total_units']} 單元/{summary['total_flows']} 流量/{summary['total_doses']} 加藥")
                     else:
-                        progress.progress(75, text="完成 Step 2: OCR 略過")
+                        progress.progress(75, text=f"[{_eta(75)}] 完成 Step 2: OCR 略過")
                 else:
                     st.session_state.pop("_ocr_result", None)
-                    progress.progress(75, text="Step 2/3: 無流向圖頁面,跳過 OCR")
+                    progress.progress(75, text=f"[{_eta(75)}] Step 2/3: 無流向圖頁面,跳過 OCR")
 
                 # ─── Step 3: 智能審查 (3 層: 質量平衡 + 學理 + 規則庫驅動) ───
                 status.info("Step 3/3: 執行智能審查 (3 層檢查)...")
-                progress.progress(82, text="Step 3.1: 質量平衡檢查...")
+                progress.progress(82, text=f"[{_eta(82)}] Step 3.1: 質量平衡檢查...")
                 findings_basic = run_balance_checks(app_data_local)
-                progress.progress(88, text="Step 3.2: 學理檢查 (環工設計準則)...")
+                progress.progress(88, text=f"[{_eta(88)}] Step 3.2: 學理檢查 (環工設計準則)...")
                 bt = None if business_type == "(不檢查)" else business_type
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
-                progress.progress(94, text="Step 3.3: 規則庫驅動檢查 (299 筆環工技師缺失)...")
+                progress.progress(94, text=f"[{_eta(94)}] Step 3.3: 規則庫驅動檢查 (299 筆環工技師缺失)...")
                 findings_rule = run_rule_driven_check(app_data_local)
                 # 合併三層, 規則庫驅動的放最後 (一般是「待人工」性質)
                 st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
 
                 # 完成
-                progress.progress(100, text="全部完成!")
+                total_elapsed = _time.time() - t_start
+                progress.progress(100, text=f"全部完成! 共耗時 {total_elapsed:.0f} 秒")
                 stats = {"不合理": 0, "待人工": 0}
                 for f in st.session_state["_check_findings"]:
                     sev = f.get("嚴重度")
@@ -439,8 +484,23 @@ with tab1:
                         stats[sev] += 1
                 status.success(
                     f"✅ 審查完成! 共 {app_data_local['total_units']} 單元 · "
-                    f"找出 {stats['不合理']} 項不合理 / {stats['待人工']} 項待人工複核"
+                    f"找出 {stats['不合理']} 項不合理 / {stats['待人工']} 項待人工複核 · 耗時 {total_elapsed:.0f} 秒"
                 )
+
+                # 記錄到 session 歷史 (重整就消失, 但本次 session 可看)
+                from datetime import datetime as _dt
+                if "_review_history" not in st.session_state:
+                    st.session_state["_review_history"] = []
+                st.session_state["_review_history"].insert(0, {
+                    "time": _dt.now().strftime("%H:%M:%S"),
+                    "filename": uploaded.name,
+                    "units": app_data_local["total_units"],
+                    "unreasonable": stats["不合理"],
+                    "manual": stats["待人工"],
+                    "elapsed_sec": int(total_elapsed),
+                })
+                # 限制歷史只保留最近 10 筆
+                st.session_state["_review_history"] = st.session_state["_review_history"][:10]
             finally:
                 try:
                     os.unlink(tmp_path)
