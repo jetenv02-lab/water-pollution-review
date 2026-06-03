@@ -22,13 +22,14 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組 + 質量平衡檢查器 + 學理檢查器
+# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組 + 質量平衡檢查器 + 學理檢查器 + 規則庫驅動檢查
 from step2_extract_v2 import extract_application
 from step2b_locate_sections import locate_sections, compress_ranges
 from step2c_ocr_diagram import ocr_diagram_pages
 from step3b_balance_check import run_balance_checks
 from step3c_unit_db import BUSINESS_TYPES
 from step3d_principle_check import run_advanced_checks
+from step3e_rule_driven_check import run_rule_driven_check
 
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
@@ -370,14 +371,17 @@ with tab1:
                     st.session_state.pop("_ocr_result", None)
                     progress.progress(75, text="Step 2/3: 無流向圖頁面,跳過 OCR")
 
-                # ─── Step 3: 智能審查 (質量平衡 + 學理檢查) ───
-                status.info("Step 3/3: 執行智能審查 (質量平衡 + 學理規則)...")
-                progress.progress(85, text="跑質量平衡檢查...")
+                # ─── Step 3: 智能審查 (3 層: 質量平衡 + 學理 + 規則庫驅動) ───
+                status.info("Step 3/3: 執行智能審查 (3 層檢查)...")
+                progress.progress(82, text="Step 3.1: 質量平衡檢查...")
                 findings_basic = run_balance_checks(app_data_local)
-                progress.progress(92, text="跑進階學理檢查 (jetwatersystem 設計準則)...")
+                progress.progress(88, text="Step 3.2: 學理檢查 (jetwatersystem 設計準則)...")
                 bt = None if business_type == "(不檢查)" else business_type
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
-                st.session_state["_check_findings"] = findings_basic + findings_adv
+                progress.progress(94, text="Step 3.3: 規則庫驅動檢查 (299 筆環工技師缺失)...")
+                findings_rule = run_rule_driven_check(app_data_local)
+                # 合併三層, 規則庫驅動的放最後 (一般是「待人工」性質)
+                st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
 
                 # 完成
                 progress.progress(100, text="全部完成!")
