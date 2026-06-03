@@ -1120,10 +1120,8 @@ with tab_import:
         importer_ok = False
 
     if importer_ok:
-        st.divider()
+        from datetime import date as _date
 
-        # ── Step 1: 來源資訊 ──
-        st.markdown("### Step 1 — 填這份新審查意見的基本資料")
         # 預先讀現有 _來源清單 算下個 S 編號
         try:
             _state = rule_importer._get_existing_state()
@@ -1133,65 +1131,94 @@ with tab_import:
             next_s = "S?"
             next_d = "D?"
 
-        st.caption(f"📌 系統會自動分配: 來源代號 = `{next_s}` / 第一筆缺失ID = `{next_d}` 起跳")
+        st.info(f"📌 系統會自動分配: 來源代號 = `{next_s}` / 第一筆缺失ID = `{next_d}` 起跳")
 
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            src_filename = st.text_input("審查意見檔名", key="imp_filename",
-                                          placeholder="例: 2026 環保署查核缺失.pdf")
-            src_technician = st.text_input("技師姓名 (可多位用 / 分隔)", key="imp_technician",
-                                            placeholder="例: 方天志 / 李俊坤")
-            src_cert = st.text_input("技師證書字號", key="imp_cert", placeholder="可填 (見原文)")
-        with col_m2:
-            src_date = st.text_input("查核日期", key="imp_date",
-                                      placeholder="例: 2026-01 或 115 年 1 月")
-            src_company = st.text_input("簽證事業名稱", key="imp_company",
-                                         placeholder="例: 秋棠科技股份有限公司 / (多家)")
-            src_note = st.text_input("備註 (可選)", key="imp_note",
-                                      placeholder="例: 半導體業, 序 1-20")
+        # ── Step 1: 提供資料 (兩種方式) ──
+        st.markdown("### Step 1 — 提供規則資料")
 
-        st.divider()
-
-        # ── Step 2: 貼上規則資料 ──
-        st.markdown("### Step 2 — 貼上 NotebookLM 整理好的規則表")
-        st.caption(
-            "**支援格式**: TSV (Excel 複製貼上預設) / CSV / Markdown 表格。"
-            " 必要欄位: `原文缺失` / `檢查類型` / `對照項目` / `規則` / `標準槽體名稱`。"
-            " 其他欄位 (`缺失ID` / `原始槽體代號` / `技師姓名` / `序號` / `比對位置` / `判定邏輯`) 可選, 缺失ID 留空系統會自動分配。"
+        input_mode = st.radio(
+            "選擇輸入方式",
+            ["📎 上傳檔案 (CSV / xlsx)", "📝 貼上文字"],
+            key="imp_input_mode",
+            horizontal=True,
         )
 
-        with st.expander("📋 範本格式 (點開複製到 Sheet 編輯後再貼回來)"):
-            st.code("""缺失ID\t原文缺失\t檢查類型\t對照項目\t規則\t比對位置\t判定邏輯\t技師姓名\t序號\t標準槽體名稱\t原始槽體代號
+        parse_result = None
+        auto_filename = ""
+        auto_technicians = ""
+
+        if input_mode.startswith("📎"):
+            uploaded = st.file_uploader(
+                "拖檔案到這裡, 或點選檔案",
+                type=["csv", "xlsx", "xls"],
+                key="imp_uploader",
+                help="CSV: 單一扁平表 / xlsx: 可單一分頁也可多分頁 (每分頁名稱 = 槽體名稱)"
+            )
+            if uploaded:
+                with st.spinner(f"解析 {uploaded.name}…"):
+                    parse_result = rule_importer.parse_uploaded_file(uploaded)
+                auto_filename = uploaded.name.rsplit(".", 1)[0]
+
+                if parse_result.get("ok") and parse_result.get("sheets"):
+                    sheets_info = parse_result["sheets"]
+                    if len(sheets_info) > 1:
+                        st.caption(
+                            f"📑 偵測到 {len(sheets_info)} 個分頁: "
+                            + ", ".join(f"{s['name']}({s['rows']})" for s in sheets_info[:8])
+                            + ("..." if len(sheets_info) > 8 else "")
+                        )
+        else:
+            st.caption(
+                "**支援**: TSV (Excel 複製貼上預設) / CSV / Markdown 表格。"
+                " 必要欄位: `原文缺失` / `檢查類型` / `對照項目` / `規則` / `標準槽體名稱`。"
+            )
+
+            with st.expander("📋 範本格式 (點開複製)"):
+                st.code("""缺失ID\t原文缺失\t檢查類型\t對照項目\t規則\t比對位置\t判定邏輯\t技師姓名\t序號\t標準槽體名稱\t原始槽體代號
 \t出水池排放口缺裝液位計\t機具設施\t液位計\t放流池排放口應設液位計監測水位\t廢污水處理設施操作條件\t若 放流池 且 無液位計 → 標記:缺機具\t範例技師\t序1 範例技師 (1)\t放流池\tT01-15
 """, language="text")
 
-        pasted_text = st.text_area(
-            "貼上你的規則表 (TSV / CSV / Markdown)",
-            key="imp_pasted",
-            height=250,
-            placeholder="從 NotebookLM 或 Excel/Sheet 複製整個表格 (含表頭) 直接貼這裡",
-        )
+            pasted_text = st.text_area(
+                "貼上你的規則表 (TSV / CSV / Markdown)",
+                key="imp_pasted",
+                height=200,
+                placeholder="從 NotebookLM 或 Excel/Sheet 複製整個表格 (含表頭) 直接貼這裡",
+            )
+            if pasted_text.strip():
+                parse_result = rule_importer.parse_input_text(pasted_text)
 
-        # ── Step 3: 解析 + 預覽 ──
-        if pasted_text.strip():
-            parse_result = rule_importer.parse_input_text(pasted_text)
+        # ── 後續步驟 (只有 parse_result OK 才往下) ──
+        if parse_result:
             if not parse_result.get("ok"):
                 st.error(f"❌ 解析失敗: {parse_result.get('error')}")
             else:
                 rows = parse_result["rows"]
-                st.success(f"✅ 解析成功: {parse_result['row_count']} 筆 ({parse_result['format'].upper()} 格式)")
 
-                # 顯示前 5 筆預覽
+                # 自動推導: 從上傳資料抽出技師姓名 (去重)
+                techs_in_data = sorted({
+                    (r.get("技師姓名") or "").strip()
+                    for r in rows
+                    if (r.get("技師姓名") or "").strip()
+                })
+                if techs_in_data:
+                    auto_technicians = " / ".join(techs_in_data[:5])
+                    if len(techs_in_data) > 5:
+                        auto_technicians += f" 等 {len(techs_in_data)} 位"
+
+                st.success(
+                    f"✅ 解析成功: {parse_result['row_count']} 筆 "
+                    f"({parse_result['format'].upper()})"
+                )
+
                 with st.expander(f"📋 前 5 筆預覽 (共 {len(rows)} 筆)"):
                     import pandas as _pd
                     df_preview = _pd.DataFrame(rows).fillna("")
                     st.dataframe(df_preview.head(5), width="stretch", hide_index=True)
 
-                st.divider()
-                st.markdown("### Step 3 — 預覽匯入結果")
+                # ── Step 2: 預覽匯入結果 ──
+                st.markdown("### Step 2 — 預覽匯入結果")
                 preview = rule_importer.preview_import(rows)
 
-                # 統計
                 col_p1, col_p2, col_p3, col_p4 = st.columns(4)
                 col_p1.metric("總筆數", preview["total"])
                 col_p2.metric("可匯入", preview["ok_to_import"])
@@ -1209,11 +1236,12 @@ with tab_import:
                     st.info(
                         f"ℹ️ {len(preview['id_conflicts'])} 筆缺失ID 跟現有重複, "
                         f"系統會自動改成 `{next_d}` 起的新編號: "
-                        f"{', '.join(preview['id_conflicts'][:5])}{'...' if len(preview['id_conflicts']) > 5 else ''}"
+                        f"{', '.join(preview['id_conflicts'][:5])}"
+                        f"{'...' if len(preview['id_conflicts']) > 5 else ''}"
                     )
 
                 if preview["missing_required"]:
-                    with st.expander(f"⚠️ {len(preview['missing_required'])} 筆缺必填欄, 會被跳過"):
+                    with st.expander(f"⚠️ {len(preview['missing_required'])} 筆缺必填欄 (會被跳過)"):
                         for m in preview["missing_required"][:20]:
                             st.write(f"- 第 {m['row_idx']} 列: 缺 {', '.join(m['missing'])} (預覽: {m['row_preview']})")
                         if len(preview["missing_required"]) > 20:
@@ -1223,29 +1251,62 @@ with tab_import:
                     with st.expander(f"📂 涵蓋槽體清單 ({len(preview['tanks_in_import'])} 個)"):
                         st.write(", ".join(preview["tanks_in_import"]))
 
-                st.divider()
+                # ── Step 3: 基本資料 (自動帶入, 可選修改) ──
+                with st.expander("📝 基本資料 (系統已自動帶入, 可選擇修改)", expanded=False):
+                    col_m1, col_m2 = st.columns(2)
+                    today_str = _date.today().strftime("%Y-%m-%d")
+                    with col_m1:
+                        src_filename = st.text_input(
+                            "審查意見檔名 (自動)", value=auto_filename,
+                            key="imp_filename",
+                            help="預設使用上傳檔案的檔名 (扣副檔名)",
+                        )
+                        src_technician = st.text_input(
+                            "技師姓名 (自動)", value=auto_technicians,
+                            key="imp_technician",
+                            help="從上傳資料的「技師姓名」欄自動統計",
+                        )
+                        src_cert = st.text_input("技師證書字號 (可選)", value="",
+                                                  key="imp_cert", placeholder="留空或 (見原文)")
+                    with col_m2:
+                        src_date = st.text_input("查核日期 (預設今天)", value=today_str,
+                                                  key="imp_date")
+                        src_company = st.text_input("簽證事業名稱 (可選)", value="",
+                                                     key="imp_company", placeholder="例: (多家) 或 公司名")
+                        src_note = st.text_input("備註 (可選)", value="",
+                                                  key="imp_note", placeholder="留空使用預設")
+
+                # 沒展開的話 src_xxx 變數不會被設, 在這邊補預設
+                if "imp_filename" not in st.session_state:
+                    src_filename = auto_filename or "未命名審查意見"
+                    src_technician = auto_technicians
+                    src_cert = ""
+                    src_date = _date.today().strftime("%Y-%m-%d")
+                    src_company = ""
+                    src_note = ""
+                else:
+                    src_filename = st.session_state.get("imp_filename", auto_filename) or auto_filename or "未命名審查意見"
+                    src_technician = st.session_state.get("imp_technician", auto_technicians)
+                    src_cert = st.session_state.get("imp_cert", "")
+                    src_date = st.session_state.get("imp_date", _date.today().strftime("%Y-%m-%d"))
+                    src_company = st.session_state.get("imp_company", "")
+                    src_note = st.session_state.get("imp_note", "")
 
                 # ── Step 4: 確認匯入 ──
-                st.markdown("### Step 4 — 確認匯入")
-                col_warn, col_btn = st.columns([3, 1])
-                with col_warn:
-                    if not src_filename:
-                        st.warning("請先填「審查意見檔名」(Step 1)")
-                    else:
-                        st.info(
-                            f"即將匯入 **{preview['ok_to_import']}** 筆 → "
-                            f"來源代號 **{preview['next_source_code']}** / "
-                            f"從 **{next_d}** 開始分配 ID"
-                        )
+                st.markdown("### Step 3 — 確認匯入")
+                st.info(
+                    f"即將匯入 **{preview['ok_to_import']}** 筆 → "
+                    f"來源代號 **{preview['next_source_code']}** ({src_filename}) / "
+                    f"從 **{next_d}** 開始分配 ID"
+                )
 
                 confirm_import = st.checkbox(
                     "我確定要寫入 規則庫.xlsx (會自動備份舊版)",
                     key="imp_confirm",
-                    disabled=not src_filename,
                 )
 
                 if st.button("📥 執行匯入", type="primary",
-                             disabled=not (src_filename and confirm_import),
+                             disabled=not confirm_import,
                              width="stretch"):
                     metadata = {
                         "檔名": src_filename,

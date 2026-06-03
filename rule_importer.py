@@ -151,6 +151,126 @@ def parse_input_text(text):
 
 
 # ──────────────────────────────────────────────────
+# 解析上傳檔案 (CSV / XLSX)
+# ──────────────────────────────────────────────────
+
+def parse_csv_file(file_bytes, filename="(uploaded.csv)"):
+    """解析上傳的 CSV 檔。自動偵測編碼 (UTF-8 / UTF-8-BOM / Big5)。
+
+    Returns:
+        {"ok": True, "rows": [...], "format": "csv-file", "row_count": N}
+        {"ok": False, "error": str}
+    """
+    # 試多種編碼
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "big5", "cp950"):
+        try:
+            text = file_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return {"ok": False, "error": f"無法讀取 {filename} — 編碼不支援"}
+
+    result = parse_input_text(text)
+    if result.get("ok"):
+        result["format"] = "csv-file"
+        result["filename"] = filename
+    return result
+
+
+def parse_xlsx_file(file_bytes, filename="(uploaded.xlsx)"):
+    """解析上傳的 xlsx 檔。
+
+    支援兩種結構:
+    1. 單一分頁 (扁平表): 第一個分頁當資料, 自動讀
+    2. 多分頁 (跟主檔同結構): 每分頁名稱 = 標準槽體名稱, 合併所有分頁
+
+    Returns:
+        {"ok": True, "rows": [...], "format": "xlsx-file", "row_count": N, "sheets": [...]}
+        {"ok": False, "error": str}
+    """
+    try:
+        from openpyxl import load_workbook
+        import io
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    except Exception as e:
+        return {"ok": False, "error": f"無法打開 xlsx: {e}"}
+
+    all_rows = []
+    used_sheets = []
+
+    for sn in wb.sheetnames:
+        if sn.startswith("_"):
+            continue  # 跳過 meta 分頁
+        ws = wb[sn]
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            headers_raw = next(rows_iter)
+        except StopIteration:
+            continue
+        if not headers_raw:
+            continue
+        # 對應欄名
+        std_headers = []
+        for h in headers_raw:
+            std = _map_field(h) if h else None
+            std_headers.append(std)
+
+        sheet_row_count = 0
+        for raw_row in rows_iter:
+            if not raw_row or not any(c is not None and str(c).strip() for c in raw_row):
+                continue
+            row_dict = {}
+            for std, v in zip(std_headers, raw_row):
+                if std:
+                    row_dict[std] = "" if v is None else str(v).strip()
+            # 若分頁名是合法槽體 → 補進「標準槽體名稱」
+            if "標準槽體名稱" not in row_dict or not row_dict.get("標準槽體名稱"):
+                if not sn.startswith("_"):
+                    row_dict["標準槽體名稱"] = sn
+            if any(row_dict.values()):
+                all_rows.append(row_dict)
+                sheet_row_count += 1
+        if sheet_row_count > 0:
+            used_sheets.append({"name": sn, "rows": sheet_row_count})
+
+    if not all_rows:
+        return {"ok": False, "error": "xlsx 沒有任何有效資料 (檢查表頭跟欄位名稱)"}
+
+    return {
+        "ok": True,
+        "rows": all_rows,
+        "format": "xlsx-file",
+        "row_count": len(all_rows),
+        "sheets": used_sheets,
+        "filename": filename,
+    }
+
+
+def parse_uploaded_file(uploaded_file):
+    """通用上傳檔案解析 — 看副檔名自動決定走 CSV / XLSX。
+
+    Args:
+        uploaded_file: Streamlit 的 UploadedFile 物件 (有 .name / .getvalue())
+    """
+    if uploaded_file is None:
+        return {"ok": False, "error": "沒有檔案"}
+    name = uploaded_file.name.lower()
+    data = uploaded_file.getvalue()
+
+    if name.endswith(".csv"):
+        return parse_csv_file(data, uploaded_file.name)
+    elif name.endswith(".xlsx") or name.endswith(".xls"):
+        return parse_xlsx_file(data, uploaded_file.name)
+    elif name.endswith(".pdf"):
+        return {"ok": False,
+                "error": "PDF 自動抽取尚未實作 — 請先用 NotebookLM/Gemini 抽出 CSV 後再上傳"}
+    else:
+        return {"ok": False, "error": f"不支援的副檔名: {name}"}
+
+
+# ──────────────────────────────────────────────────
 # 預覽 (對照現有 規則庫.xlsx)
 # ──────────────────────────────────────────────────
 
