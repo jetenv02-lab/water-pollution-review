@@ -369,7 +369,7 @@ with st.sidebar:
             for mod, err in _import_errors:
                 st.caption(f"**{mod}**: {err[:150]}")
 
-tab1, tab2, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "📖 使用說明"])
+tab1, tab2, tab_sync, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "🔄 規則庫管理", "📖 使用說明"])
 
 with tab1:
     st.subheader("上傳申請文件 PDF")
@@ -933,6 +933,123 @@ with tab2:
             } for r in display_rules[:500]],
             use_container_width=True, hide_index=True,
         )
+
+# ─────────────────────────────────────────────
+# 規則庫管理 (Google Sheets 同步)
+# ─────────────────────────────────────────────
+with tab_sync:
+    st.subheader("🔄 規則庫 ↔ Google Sheets 同步")
+    st.caption("rules_extracted.csv (主檔) ↔ Google Sheets (給同事線上編輯)。同步前自動備份。")
+
+    # 載入同步模組
+    try:
+        import sheets_sync
+        sync_ok = True
+    except Exception as e:
+        st.error(f"無法載入 sheets_sync 模組: {e}")
+        st.info("請先 `pip install gspread google-auth` (或檢查 requirements.txt)")
+        sync_ok = False
+
+    if sync_ok:
+        # ── 認證狀態 ──
+        status = sheets_sync.check_auth_status()
+        if status["ok"]:
+            st.success(f"✅ {status['message']}")
+            st.caption(f"Service Account: `{status['email']}`")
+        else:
+            st.warning(f"⚠️ {status['message']}")
+            st.info(
+                "請先按照 **SHEETS_SETUP.md** 完成 Service Account 申請設定。\n\n"
+                "重點:\n"
+                "1. 申請 Google Service Account JSON\n"
+                "2. 把 Sheet 分享給 service account email (給編輯權限)\n"
+                "3. JSON 放在: 本機 `service_account.json` 或 Streamlit Secrets"
+            )
+
+        st.divider()
+
+        # ── Sheet 連結 ──
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheets_sync.DEFAULT_SHEET_ID}/edit"
+        st.markdown(f"**📄 目標 Sheet**: [打開 Sheet]({sheet_url})")
+        st.caption(f"Sheet ID: `{sheets_sync.DEFAULT_SHEET_ID}` / 工作表: `{sheets_sync.DEFAULT_WORKSHEET}`")
+
+        st.divider()
+
+        # ── 三個動作按鈕 ──
+        col_a, col_b, col_c = st.columns(3)
+
+        with col_a:
+            st.markdown("#### ⬆️ 上傳")
+            st.caption("把本機 CSV (299 筆規則) 推到 Sheet。會清空 Sheet 後整批寫入。")
+            if st.button("上傳 CSV → Sheet", type="primary", disabled=not status["ok"], width="stretch"):
+                with st.spinner("上傳中…"):
+                    r = sheets_sync.upload_csv_to_sheets()
+                if r.get("ok"):
+                    st.success(f"✅ 上傳成功: {r['rows_written']} 筆 × {r['cols_written']} 欄")
+                    st.caption(f"時間: {r['timestamp']}")
+                else:
+                    st.error(f"❌ 失敗: {r.get('error', '?')}")
+
+        with col_b:
+            st.markdown("#### 🔍 預覽差異")
+            st.caption("比對 Sheet vs CSV 哪些規則有差異, 不會改檔。")
+            if st.button("預覽 Sheet vs CSV 差異", disabled=not status["ok"], width="stretch"):
+                with st.spinner("比對中…"):
+                    r = sheets_sync.preview_diff()
+                if r.get("ok"):
+                    st.success(
+                        f"Sheet 多: {len(r['added'])} 筆 / "
+                        f"CSV 多: {len(r['removed'])} 筆 / "
+                        f"異動: {len(r['changed'])} 筆 / "
+                        f"未變: {r['unchanged_count']} 筆"
+                    )
+                    if r['added']:
+                        with st.expander(f"Sheet 多出 {len(r['added'])} 筆"):
+                            st.write(r['added'])
+                    if r['removed']:
+                        with st.expander(f"CSV 多出 {len(r['removed'])} 筆 (Sheet 已被刪)"):
+                            st.write(r['removed'])
+                    if r['changed']:
+                        with st.expander(f"異動 {len(r['changed'])} 筆"):
+                            for c in r['changed'][:50]:
+                                st.write(f"- `{c['id']}` 改了欄位: {', '.join(c['fields'])}")
+                            if len(r['changed']) > 50:
+                                st.caption(f"… 還有 {len(r['changed']) - 50} 筆")
+                else:
+                    st.error(f"❌ 失敗: {r.get('error', '?')}")
+
+        with col_c:
+            st.markdown("#### ⬇️ 下載 (危險)")
+            st.caption("把 Sheet 拉回覆寫 CSV。覆寫前自動備份。")
+            confirm_dl = st.checkbox("我確定要覆寫 CSV", key="confirm_download")
+            if st.button("下載 Sheet → CSV", type="secondary",
+                         disabled=not (status["ok"] and confirm_dl), width="stretch"):
+                with st.spinner("下載 + 備份中…"):
+                    r = sheets_sync.download_sheets_to_csv()
+                if r.get("ok"):
+                    st.success(f"✅ 下載成功: {r['rows_read']} 筆 × {r['cols_read']} 欄")
+                    if r.get("backup"):
+                        st.caption(f"已備份: `{os.path.basename(r['backup'].get('csv', ''))}` + `.xlsx`")
+                    st.caption(f"時間: {r['timestamp']}")
+                    st.info("⚠️ 別忘記 git commit + push 把新 CSV 推上 GitHub")
+                else:
+                    st.error(f"❌ 失敗: {r.get('error', '?')}")
+
+        st.divider()
+
+        # ── 備份清單 ──
+        st.markdown("#### 📦 本機備份歷史")
+        st.caption("每次「下載」前都會自動把現有 CSV 備份成 timestamped 檔案 (.csv + .xlsx)")
+        backups = sheets_sync.list_backups()
+        if backups:
+            import pandas as _pd
+            df_bk = _pd.DataFrame(backups)
+            df_bk = df_bk[["mtime", "name", "size_kb"]]
+            df_bk.columns = ["時間", "檔名", "大小 KB"]
+            st.dataframe(df_bk, width="stretch", hide_index=True)
+            st.caption(f"備份目錄: `{sheets_sync.BACKUP_DIR}` (已加 .gitignore, 不會推到 GitHub)")
+        else:
+            st.info("尚無備份。第一次「下載 Sheet → CSV」後會自動產生。")
 
 with tab3:
     st.subheader("水措審查系統 v3 — 使用說明")

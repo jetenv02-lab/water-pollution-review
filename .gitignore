@@ -25,6 +25,11 @@ service_account.json
 *.json.key
 credentials.json
 token.json
+.streamlit/secrets.toml
+
+# 自動備份目錄
+backup/
+*.bak
 
 # IDE
 .vscode/
