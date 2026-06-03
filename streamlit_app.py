@@ -22,11 +22,13 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組 + 質量平衡檢查器
+# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組 + 質量平衡檢查器 + 學理檢查器
 from step2_extract_v2 import extract_application
 from step2b_locate_sections import locate_sections, compress_ranges
 from step2c_ocr_diagram import ocr_diagram_pages
 from step3b_balance_check import run_balance_checks
+from step3c_unit_db import BUSINESS_TYPES
+from step3d_principle_check import run_advanced_checks
 
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
@@ -485,13 +487,28 @@ with tab1:
     if st.session_state.get("_app_data"):
         st.divider()
         st.subheader("智能審查結果")
-        st.caption("根據環工技師查核缺失歸納的學理規則,自動檢查申請文件中的不合理之處。")
+        st.caption("根據環工技師查核缺失歸納 + jetwatersystem 設計準則的學理規則,自動檢查申請文件中的不合理之處。")
 
-        if st.button("執行智能審查", type="primary"):
+        # 事業類別選擇 (供進階檢查使用)
+        col_bt, col_btn = st.columns([2, 1])
+        with col_bt:
+            business_type = st.selectbox(
+                "事業類別 (用於檢查申報項目是否完整)",
+                ["(不檢查)"] + list(BUSINESS_TYPES.keys()),
+                key="_business_type",
+            )
+        with col_btn:
+            st.text("")  # 對齊
+            st.text("")
+            run_check = st.button("執行智能審查", type="primary")
+
+        if run_check:
             with st.spinner("執行學理檢查中..."):
-                st.session_state["_check_findings"] = run_balance_checks(
-                    st.session_state["_app_data"]
-                )
+                # 同時跑質量平衡檢查 + 進階學理檢查
+                findings_basic = run_balance_checks(st.session_state["_app_data"])
+                bt = None if business_type == "(不檢查)" else business_type
+                findings_adv = run_advanced_checks(st.session_state["_app_data"], business_type=bt)
+                st.session_state["_check_findings"] = findings_basic + findings_adv
 
         # 顯示 (基於 session 結果, 切換其他元件不會消失)
         if st.session_state.get("_check_findings") is not None:
