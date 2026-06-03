@@ -180,17 +180,21 @@ def ocr_diagram_pages(pdf_path, page_numbers, verbose=True):
           "summary": {total_units, total_flows, total_doses, ...}
         }
     """
-    # Lazy import - 避免 streamlit_app.py 載入時就吃掉一堆記憶體
+    # Lazy import + 初始化 - 用 Exception 而非 ImportError 抓全部錯誤
     try:
         from rapidocr_onnxruntime import RapidOCR
-    except ImportError:
+        if verbose:
+            print(f"初始化 RapidOCR engine...")
+        ocr_engine = RapidOCR()
+    except ImportError as e:
         return {
-            "error": "未安裝 rapidocr-onnxruntime,請執行: pip install rapidocr-onnxruntime",
+            "error": f"無法 import rapidocr_onnxruntime: {e}. 請執行 pip install rapidocr-onnxruntime",
         }
-
-    if verbose:
-        print(f"初始化 RapidOCR engine...")
-    ocr_engine = RapidOCR()
+    except Exception as e:
+        import traceback
+        return {
+            "error": f"RapidOCR 初始化失敗 ({type(e).__name__}): {e}\n{traceback.format_exc()[:500]}",
+        }
 
     if verbose:
         print(f"OCR 目標頁: {page_numbers}")
