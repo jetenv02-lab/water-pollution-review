@@ -17,7 +17,7 @@ application_*.json
 comparison_*.json
 comparison_*.csv
 deficiency_dump*.txt
-規則庫.xlsx
+# 規則庫.xlsx 已升級為主檔, 需要 push 到 GitHub (v2 結構)
 規則庫_範本.xlsx
 
 # Google API 金鑰 (絕對不可上傳)
@@ -26,6 +26,7 @@ service_account.json
 credentials.json
 token.json
 .streamlit/secrets.toml
+gen_secrets_toml.py
 
 # 自動備份目錄
 backup/

@@ -935,11 +935,15 @@ with tab2:
         )
 
 # ─────────────────────────────────────────────
-# 規則庫管理 (Google Sheets 同步)
+# 規則庫管理 (Google Sheets 同步) — v2: xlsx 為主, csv 自動衍生
 # ─────────────────────────────────────────────
 with tab_sync:
     st.subheader("🔄 規則庫 ↔ Google Sheets 同步")
-    st.caption("rules_extracted.csv (主檔) ↔ Google Sheets (給同事線上編輯)。同步前自動備份。")
+    st.markdown(
+        "**規則庫.xlsx** 是主檔 (跟同事編輯的那份一樣)。\n"
+        "**Google Sheet** 是同事的線上編輯場 (結構同 xlsx, 每槽體一分頁)。\n"
+        "**rules_extracted.csv** 是「衍生物」, 自動由 xlsx 產出, 給審查程式跑。"
+    )
 
     # 載入同步模組
     try:
@@ -959,87 +963,134 @@ with tab_sync:
         else:
             st.warning(f"⚠️ {status['message']}")
             st.info(
-                "請先按照 **SHEETS_SETUP.md** 完成 Service Account 申請設定。\n\n"
-                "重點:\n"
-                "1. 申請 Google Service Account JSON\n"
-                "2. 把 Sheet 分享給 service account email (給編輯權限)\n"
-                "3. JSON 放在: 本機 `service_account.json` 或 Streamlit Secrets"
+                "請先按照 **SHEETS_SETUP.md** 完成 Service Account 申請設定。"
             )
 
         st.divider()
 
         # ── Sheet 連結 ──
         sheet_url = f"https://docs.google.com/spreadsheets/d/{sheets_sync.DEFAULT_SHEET_ID}/edit"
-        st.markdown(f"**📄 目標 Sheet**: [打開 Sheet]({sheet_url})")
-        st.caption(f"Sheet ID: `{sheets_sync.DEFAULT_SHEET_ID}` / 工作表: `{sheets_sync.DEFAULT_WORKSHEET}`")
+        col_link_a, col_link_b = st.columns([3, 2])
+        with col_link_a:
+            st.markdown(f"**📄 Google Sheet** (給同事編): [打開 Sheet]({sheet_url})")
+            st.caption(f"Sheet ID: `{sheets_sync.DEFAULT_SHEET_ID}`")
+        with col_link_b:
+            xlsx_exists = os.path.exists(sheets_sync.RULES_XLSX)
+            csv_exists = os.path.exists(sheets_sync.RULES_CSV)
+            st.markdown("**📁 本機檔案狀態**")
+            st.caption(f"規則庫.xlsx: {'✅ 存在' if xlsx_exists else '❌ 不存在'}")
+            st.caption(f"rules_extracted.csv: {'✅ 存在' if csv_exists else '❌ 不存在'}")
 
         st.divider()
 
-        # ── 三個動作按鈕 ──
-        col_a, col_b, col_c = st.columns(3)
+        # ── 四個動作按鈕 ──
+        col_a, col_b, col_c, col_d = st.columns(4)
 
         with col_a:
             st.markdown("#### ⬆️ 上傳")
-            st.caption("把本機 CSV (299 筆規則) 推到 Sheet。會清空 Sheet 後整批寫入。")
-            if st.button("上傳 CSV → Sheet", type="primary", disabled=not status["ok"], width="stretch"):
-                with st.spinner("上傳中…"):
-                    r = sheets_sync.upload_csv_to_sheets()
+            st.caption("xlsx → Sheet (清空後整批寫入,自動加狀態下拉選單)")
+            if st.button("上傳 xlsx → Sheet", type="primary",
+                         disabled=not status["ok"], width="stretch", key="upload_btn"):
+                with st.spinner("上傳中… (29 個分頁)"):
+                    r = sheets_sync.upload_xlsx_to_sheets()
                 if r.get("ok"):
-                    st.success(f"✅ 上傳成功: {r['rows_written']} 筆 × {r['cols_written']} 欄")
+                    st.success(
+                        f"✅ 上傳成功: {len(r['sheets_written'])} 個分頁 / "
+                        f"{r['total_data_rows']} 筆資料"
+                    )
+                    if r.get("sheets_removed"):
+                        st.caption(f"清掉舊分頁: {', '.join(r['sheets_removed'])}")
+                    st.caption(f"狀態欄下拉選單: 已設 {r.get('validations_added', 0)} 個分頁")
                     st.caption(f"時間: {r['timestamp']}")
                 else:
                     st.error(f"❌ 失敗: {r.get('error', '?')}")
 
         with col_b:
             st.markdown("#### 🔍 預覽差異")
-            st.caption("比對 Sheet vs CSV 哪些規則有差異, 不會改檔。")
-            if st.button("預覽 Sheet vs CSV 差異", disabled=not status["ok"], width="stretch"):
+            st.caption("比對 Sheet vs xlsx 哪些規則有差異 (依槽體+缺失ID)")
+            if st.button("預覽差異", disabled=not status["ok"],
+                         width="stretch", key="preview_btn"):
                 with st.spinner("比對中…"):
                     r = sheets_sync.preview_diff()
                 if r.get("ok"):
                     st.success(
-                        f"Sheet 多: {len(r['added'])} 筆 / "
-                        f"CSV 多: {len(r['removed'])} 筆 / "
-                        f"異動: {len(r['changed'])} 筆 / "
-                        f"未變: {r['unchanged_count']} 筆"
+                        f"Sheet {r['sheet_total']} 筆 vs xlsx {r['xlsx_total']} 筆 / "
+                        f"新增 {r['total_added']} / 刪除 {r['total_removed']} / "
+                        f"異動 {r['total_changed']}"
                     )
-                    if r['added']:
-                        with st.expander(f"Sheet 多出 {len(r['added'])} 筆"):
-                            st.write(r['added'])
-                    if r['removed']:
-                        with st.expander(f"CSV 多出 {len(r['removed'])} 筆 (Sheet 已被刪)"):
-                            st.write(r['removed'])
-                    if r['changed']:
-                        with st.expander(f"異動 {len(r['changed'])} 筆"):
-                            for c in r['changed'][:50]:
-                                st.write(f"- `{c['id']}` 改了欄位: {', '.join(c['fields'])}")
-                            if len(r['changed']) > 50:
-                                st.caption(f"… 還有 {len(r['changed']) - 50} 筆")
+                    if r.get("by_tank"):
+                        with st.expander(f"差異明細 ({len(r['by_tank'])} 個槽體有變化)"):
+                            for tank, d in r["by_tank"].items():
+                                line = f"**{tank}**: "
+                                parts = []
+                                if d["added"]:
+                                    parts.append(f"➕ {len(d['added'])} 筆 ({', '.join(d['added'][:3])}…)")
+                                if d["removed"]:
+                                    parts.append(f"➖ {len(d['removed'])} 筆 ({', '.join(d['removed'][:3])}…)")
+                                if d["changed"]:
+                                    parts.append(f"✏️ {len(d['changed'])} 筆 ({', '.join(d['changed'][:3])}…)")
+                                st.markdown(line + " / ".join(parts))
+                    else:
+                        st.info("Sheet 跟 xlsx 完全一致 ✅")
                 else:
                     st.error(f"❌ 失敗: {r.get('error', '?')}")
 
         with col_c:
-            st.markdown("#### ⬇️ 下載 (危險)")
-            st.caption("把 Sheet 拉回覆寫 CSV。覆寫前自動備份。")
-            confirm_dl = st.checkbox("我確定要覆寫 CSV", key="confirm_download")
-            if st.button("下載 Sheet → CSV", type="secondary",
-                         disabled=not (status["ok"] and confirm_dl), width="stretch"):
+            st.markdown("#### ⬇️ 下載")
+            st.caption("Sheet → xlsx (自動備份舊版 + 自動產 csv)")
+            confirm_dl = st.checkbox("我確定要覆寫 xlsx", key="confirm_download")
+            if st.button("下載 Sheet → xlsx", type="secondary",
+                         disabled=not (status["ok"] and confirm_dl),
+                         width="stretch", key="download_btn"):
                 with st.spinner("下載 + 備份中…"):
-                    r = sheets_sync.download_sheets_to_csv()
+                    r = sheets_sync.download_sheets_to_xlsx()
                 if r.get("ok"):
-                    st.success(f"✅ 下載成功: {r['rows_read']} 筆 × {r['cols_read']} 欄")
+                    st.success(
+                        f"✅ 下載成功: {r['sheets_read']} 個分頁 / "
+                        f"{r['total_data_rows']} 筆資料"
+                    )
                     if r.get("backup"):
-                        st.caption(f"已備份: `{os.path.basename(r['backup'].get('csv', ''))}` + `.xlsx`")
-                    st.caption(f"時間: {r['timestamp']}")
-                    st.info("⚠️ 別忘記 git commit + push 把新 CSV 推上 GitHub")
+                        st.caption(f"已備份: `{os.path.basename(r['backup'].get('xlsx',''))}`")
+                    if r.get("csv_export", {}).get("ok"):
+                        st.caption(f"已產出 csv: {r['csv_export']['rows_written']} 筆")
+                    st.warning("⚠️ 記得 git push xlsx + csv 上 GitHub, 線上版才會生效")
+                else:
+                    st.error(f"❌ 失敗: {r.get('error', '?')}")
+
+        with col_d:
+            st.markdown("#### 🔄 重產 csv")
+            st.caption("從 xlsx 重新產出 csv (不動 Sheet)")
+            if st.button("重產 csv", width="stretch", key="export_btn"):
+                with st.spinner("產出中…"):
+                    r = sheets_sync.export_xlsx_to_csv()
+                if r.get("ok"):
+                    st.success(f"✅ 完成: {r['rows_written']} 筆規則寫入 csv")
                 else:
                     st.error(f"❌ 失敗: {r.get('error', '?')}")
 
         st.divider()
 
+        # ── 狀態欄統計 ──
+        try:
+            import step3e_rule_driven_check as _s3e
+            rules = _s3e.load_rules_by_tank()
+            # 排除 _ 開頭的 key
+            tank_rules = {k: v for k, v in rules.items() if not k.startswith("_")}
+            total = sum(len(v) for v in tank_rules.values())
+            skipped = _s3e.get_last_skipped_count()
+            st.markdown("#### 📊 規則狀態統計")
+            cols = st.columns(3)
+            cols[0].metric("可用規則 (V/空白)", total)
+            cols[1].metric("跳過 (狀態=?)", skipped)
+            cols[2].metric("規則庫總數", total + skipped)
+        except Exception as e:
+            st.caption(f"無法載入規則統計: {e}")
+
+        st.divider()
+
         # ── 備份清單 ──
         st.markdown("#### 📦 本機備份歷史")
-        st.caption("每次「下載」前都會自動把現有 CSV 備份成 timestamped 檔案 (.csv + .xlsx)")
+        st.caption("每次「下載」前自動備份 xlsx + csv (timestamped)")
         backups = sheets_sync.list_backups()
         if backups:
             import pandas as _pd

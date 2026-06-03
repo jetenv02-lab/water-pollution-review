@@ -41,13 +41,22 @@ RULES_CSV = os.path.join(BASE, "rules_extracted.csv")
 # ──────────────────────────────────────────────────
 
 def load_rules_by_tank():
-    """讀 rules_extracted.csv → { 標準槽體名稱: [規則 dict, ...] }。"""
+    """讀 rules_extracted.csv → { 標準槽體名稱: [規則 dict, ...] }。
+
+    跳過「狀態 = ?」(待討論) 的規則。
+    """
     if not os.path.exists(RULES_CSV):
         return {}
     rules_by_tank = defaultdict(list)
+    skipped = 0
     with open(RULES_CSV, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            # 狀態欄: 空白 / V → 跑, ? → 跳過
+            status = (row.get("狀態") or "").strip()
+            if status == "?":
+                skipped += 1
+                continue
             tank = (row.get("標準槽體名稱") or "未分類").strip()
             # 把 CSV 欄位名稱對應到原本 xlsx 的欄位名稱
             rule = {
@@ -62,9 +71,21 @@ def load_rules_by_tank():
                 "技師姓名": row.get("技師姓名", ""),
                 "序號": row.get("序號", ""),
                 "原始槽體代號": row.get("原始槽體代號", ""),
+                "狀態": status,
             }
             rules_by_tank[tank].append(rule)
+    # 把跳過數記到模組級全域 (Streamlit UI 可讀)
+    globals()["LAST_SKIPPED_COUNT"] = skipped
     return dict(rules_by_tank)
+
+
+# 上次載入規則時, 因「狀態 = ?」被跳過的筆數
+LAST_SKIPPED_COUNT = 0
+
+
+def get_last_skipped_count():
+    """回傳上次載入規則時被「狀態 = ?」跳過的筆數。"""
+    return globals().get("LAST_SKIPPED_COUNT", 0)
 
 
 # ──────────────────────────────────────────────────
