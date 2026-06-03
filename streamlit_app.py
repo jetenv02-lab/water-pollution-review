@@ -410,13 +410,27 @@ with tab1:
             import time as _time
             t_start = _time.time()
 
+            # 基準預估時間 (秒, 來自實測秋棠案例)
+            # Step1: 60s, Step2 OCR: 90s, Step3: 5s, 總共 ~155s
+            _BASELINE_TOTAL = 155
+
             def _eta(percent_done):
-                """根據已耗時 + 進度估算剩餘秒數。"""
+                """估算剩餘秒數。
+
+                早期 (已耗時 < 3 秒) 用基準預估值,
+                晚期改用「已耗時 / 已完成%」實測推估 (更準)。
+                """
                 if percent_done <= 0:
-                    return "?"
+                    return "預估中..."
                 elapsed = _time.time() - t_start
-                total_est = elapsed / (percent_done / 100)
-                remaining = max(0, total_est - elapsed)
+                # 早期用基準, 避免「跑 0.5 秒 就以為總共 5 秒」
+                if elapsed < 3:
+                    remaining = _BASELINE_TOTAL * (100 - percent_done) / 100
+                else:
+                    total_est = elapsed / (percent_done / 100)
+                    remaining = max(0, total_est - elapsed)
+                if remaining < 1:
+                    return "即將完成"
                 if remaining < 60:
                     return f"約 {remaining:.0f} 秒"
                 return f"約 {remaining/60:.1f} 分鐘"
@@ -564,6 +578,13 @@ with tab1:
 
         # 單元清單
         st.subheader("📋 處理單元清單")
+        st.caption(
+            "📐 **設計** = 設計操作參數筆數 (pH 範圍/停留時間/有效容量等規格)　·　"
+            "📏 **量測** = 量測操作參數筆數 (運作時實際監控的 pH/加藥量/DO 等)　·　"
+            "🔧 **機具** = 相關機具設施筆數 (pH 計/攪拌機/加藥機等)　·　"
+            "📥 **進** = 進流水流股數 (WTB 編號)　·　"
+            "📤 **出** = 出流水流股數 (WTA 編號)"
+        )
         unit_rows = []
         for code, info in sorted(app_data["units"].items()):
             unit_rows.append({
@@ -572,11 +593,11 @@ with tab1:
                 "標準類型": info["std_tank"],
                 "代碼": info.get("code_id", ""),
                 "頁數": ", ".join(map(str, info["pages_found"][:3])),
-                "設計": len(info["design_params"]),
-                "量測": len(info["measure_params"]),
-                "機具": len(info["equipment"]),
-                "進": len(info["influent"]),
-                "出": len(info["effluent"]),
+                "📐設計": len(info["design_params"]),
+                "📏量測": len(info["measure_params"]),
+                "🔧機具": len(info["equipment"]),
+                "📥進": len(info["influent"]),
+                "📤出": len(info["effluent"]),
             })
         st.dataframe(unit_rows, use_container_width=True, hide_index=True)
 
