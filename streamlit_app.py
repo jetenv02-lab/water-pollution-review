@@ -369,7 +369,7 @@ with st.sidebar:
             for mod, err in _import_errors:
                 st.caption(f"**{mod}**: {err[:150]}")
 
-tab1, tab2, tab_sync, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "🔄 規則庫管理", "📖 使用說明"])
+tab1, tab2, tab_sync, tab_import, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "🔄 規則庫管理", "📥 匯入新規則", "📖 使用說明"])
 
 with tab1:
     st.subheader("上傳申請文件 PDF")
@@ -1101,6 +1101,181 @@ with tab_sync:
             st.caption(f"備份目錄: `{sheets_sync.BACKUP_DIR}` (已加 .gitignore, 不會推到 GitHub)")
         else:
             st.info("尚無備份。第一次「下載 Sheet → CSV」後會自動產生。")
+
+# ─────────────────────────────────────────────
+# 📥 匯入新規則 (半自動,從 NotebookLM 結果貼上)
+# ─────────────────────────────────────────────
+with tab_import:
+    st.subheader("📥 匯入新審查意見規則")
+    st.markdown(
+        "**半自動流程**: 你 (或同事) 用 NotebookLM 把審查意見 PDF 抽出結構化規則 → 複製貼上 → "
+        "系統解析 + 預覽 + 衝突檢查 → 確認後自動寫入主檔。"
+    )
+
+    try:
+        import rule_importer
+        importer_ok = True
+    except Exception as e:
+        st.error(f"無法載入 rule_importer: {e}")
+        importer_ok = False
+
+    if importer_ok:
+        st.divider()
+
+        # ── Step 1: 來源資訊 ──
+        st.markdown("### Step 1 — 填這份新審查意見的基本資料")
+        # 預先讀現有 _來源清單 算下個 S 編號
+        try:
+            _state = rule_importer._get_existing_state()
+            next_s = f"S{_state['max_s_num'] + 1:02d}"
+            next_d = f"D{_state['max_d_num'] + 1:03d}"
+        except Exception:
+            next_s = "S?"
+            next_d = "D?"
+
+        st.caption(f"📌 系統會自動分配: 來源代號 = `{next_s}` / 第一筆缺失ID = `{next_d}` 起跳")
+
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            src_filename = st.text_input("審查意見檔名", key="imp_filename",
+                                          placeholder="例: 2026 環保署查核缺失.pdf")
+            src_technician = st.text_input("技師姓名 (可多位用 / 分隔)", key="imp_technician",
+                                            placeholder="例: 方天志 / 李俊坤")
+            src_cert = st.text_input("技師證書字號", key="imp_cert", placeholder="可填 (見原文)")
+        with col_m2:
+            src_date = st.text_input("查核日期", key="imp_date",
+                                      placeholder="例: 2026-01 或 115 年 1 月")
+            src_company = st.text_input("簽證事業名稱", key="imp_company",
+                                         placeholder="例: 秋棠科技股份有限公司 / (多家)")
+            src_note = st.text_input("備註 (可選)", key="imp_note",
+                                      placeholder="例: 半導體業, 序 1-20")
+
+        st.divider()
+
+        # ── Step 2: 貼上規則資料 ──
+        st.markdown("### Step 2 — 貼上 NotebookLM 整理好的規則表")
+        st.caption(
+            "**支援格式**: TSV (Excel 複製貼上預設) / CSV / Markdown 表格。"
+            " 必要欄位: `原文缺失` / `檢查類型` / `對照項目` / `規則` / `標準槽體名稱`。"
+            " 其他欄位 (`缺失ID` / `原始槽體代號` / `技師姓名` / `序號` / `比對位置` / `判定邏輯`) 可選, 缺失ID 留空系統會自動分配。"
+        )
+
+        with st.expander("📋 範本格式 (點開複製到 Sheet 編輯後再貼回來)"):
+            st.code("""缺失ID\t原文缺失\t檢查類型\t對照項目\t規則\t比對位置\t判定邏輯\t技師姓名\t序號\t標準槽體名稱\t原始槽體代號
+\t出水池排放口缺裝液位計\t機具設施\t液位計\t放流池排放口應設液位計監測水位\t廢污水處理設施操作條件\t若 放流池 且 無液位計 → 標記:缺機具\t範例技師\t序1 範例技師 (1)\t放流池\tT01-15
+""", language="text")
+
+        pasted_text = st.text_area(
+            "貼上你的規則表 (TSV / CSV / Markdown)",
+            key="imp_pasted",
+            height=250,
+            placeholder="從 NotebookLM 或 Excel/Sheet 複製整個表格 (含表頭) 直接貼這裡",
+        )
+
+        # ── Step 3: 解析 + 預覽 ──
+        if pasted_text.strip():
+            parse_result = rule_importer.parse_input_text(pasted_text)
+            if not parse_result.get("ok"):
+                st.error(f"❌ 解析失敗: {parse_result.get('error')}")
+            else:
+                rows = parse_result["rows"]
+                st.success(f"✅ 解析成功: {parse_result['row_count']} 筆 ({parse_result['format'].upper()} 格式)")
+
+                # 顯示前 5 筆預覽
+                with st.expander(f"📋 前 5 筆預覽 (共 {len(rows)} 筆)"):
+                    import pandas as _pd
+                    df_preview = _pd.DataFrame(rows).fillna("")
+                    st.dataframe(df_preview.head(5), width="stretch", hide_index=True)
+
+                st.divider()
+                st.markdown("### Step 3 — 預覽匯入結果")
+                preview = rule_importer.preview_import(rows)
+
+                # 統計
+                col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+                col_p1.metric("總筆數", preview["total"])
+                col_p2.metric("可匯入", preview["ok_to_import"])
+                col_p3.metric("涵蓋槽體", len(preview["tanks_in_import"]))
+                col_p4.metric("新槽體", len(preview["new_tanks"]))
+
+                if preview["new_tanks"]:
+                    st.warning(
+                        f"⚠️ 將新建 {len(preview['new_tanks'])} 個槽體分頁: "
+                        f"{', '.join(preview['new_tanks'])}\n\n"
+                        f"請確認名稱跟 RULE_AUTHORING.md 第 1 章的標準槽體一致。"
+                    )
+
+                if preview["id_conflicts"]:
+                    st.info(
+                        f"ℹ️ {len(preview['id_conflicts'])} 筆缺失ID 跟現有重複, "
+                        f"系統會自動改成 `{next_d}` 起的新編號: "
+                        f"{', '.join(preview['id_conflicts'][:5])}{'...' if len(preview['id_conflicts']) > 5 else ''}"
+                    )
+
+                if preview["missing_required"]:
+                    with st.expander(f"⚠️ {len(preview['missing_required'])} 筆缺必填欄, 會被跳過"):
+                        for m in preview["missing_required"][:20]:
+                            st.write(f"- 第 {m['row_idx']} 列: 缺 {', '.join(m['missing'])} (預覽: {m['row_preview']})")
+                        if len(preview["missing_required"]) > 20:
+                            st.caption(f"… 還有 {len(preview['missing_required']) - 20} 筆")
+
+                if preview["tanks_in_import"]:
+                    with st.expander(f"📂 涵蓋槽體清單 ({len(preview['tanks_in_import'])} 個)"):
+                        st.write(", ".join(preview["tanks_in_import"]))
+
+                st.divider()
+
+                # ── Step 4: 確認匯入 ──
+                st.markdown("### Step 4 — 確認匯入")
+                col_warn, col_btn = st.columns([3, 1])
+                with col_warn:
+                    if not src_filename:
+                        st.warning("請先填「審查意見檔名」(Step 1)")
+                    else:
+                        st.info(
+                            f"即將匯入 **{preview['ok_to_import']}** 筆 → "
+                            f"來源代號 **{preview['next_source_code']}** / "
+                            f"從 **{next_d}** 開始分配 ID"
+                        )
+
+                confirm_import = st.checkbox(
+                    "我確定要寫入 規則庫.xlsx (會自動備份舊版)",
+                    key="imp_confirm",
+                    disabled=not src_filename,
+                )
+
+                if st.button("📥 執行匯入", type="primary",
+                             disabled=not (src_filename and confirm_import),
+                             width="stretch"):
+                    metadata = {
+                        "檔名": src_filename,
+                        "技師姓名": src_technician,
+                        "技師證書字號": src_cert,
+                        "查核日期": src_date,
+                        "簽證事業名稱": src_company,
+                        "備註": src_note or "Streamlit 半自動匯入",
+                    }
+                    with st.spinner("寫入中…"):
+                        result = rule_importer.commit_import(rows, metadata, skip_missing=True)
+
+                    if result.get("ok"):
+                        st.success(
+                            f"✅ 匯入成功! 來源 **{result['source_code']}** / "
+                            f"匯入 **{result['imported_count']}** 筆 / "
+                            f"跳過 **{result['skipped_count']}** 筆"
+                        )
+                        if result.get("new_tanks_created"):
+                            st.info(f"🆕 新建分頁: {', '.join(result['new_tanks_created'])}")
+                        if result.get("backup"):
+                            st.caption(f"備份: `{os.path.basename(result['backup'])}`")
+                        st.warning(
+                            "⚠️ 下一步:\n"
+                            "1. 切到「🔄 規則庫管理」分頁\n"
+                            "2. 按「⬆️ 上傳 xlsx → Sheet」(讓同事看到新規則)\n"
+                            "3. 本機 git push (推到 GitHub, 線上版生效)"
+                        )
+                    else:
+                        st.error(f"❌ 失敗: {result.get('error', '?')}")
 
 with tab3:
     st.subheader("水措審查系統 v3 — 使用說明")
