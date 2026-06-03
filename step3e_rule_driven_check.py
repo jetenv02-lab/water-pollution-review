@@ -27,40 +27,44 @@
     from step3e_rule_driven_check import run_rule_driven_check
     findings = run_rule_driven_check(app_data)
 """
+import csv
 import os
 import re
 from collections import defaultdict
-import openpyxl
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-RULES_XLSX = os.path.join(BASE, "規則庫.xlsx")
+RULES_CSV = os.path.join(BASE, "rules_extracted.csv")
 
 
 # ──────────────────────────────────────────────────
-# 規則庫載入
+# 規則庫載入 (直接讀 rules_extracted.csv, 避免依賴本機才有的 xlsx)
 # ──────────────────────────────────────────────────
 
 def load_rules_by_tank():
-    """讀 規則庫.xlsx 各槽體分頁 → { 標準槽體名稱: [規則 dict, ...] }。"""
-    if not os.path.exists(RULES_XLSX):
+    """讀 rules_extracted.csv → { 標準槽體名稱: [規則 dict, ...] }。"""
+    if not os.path.exists(RULES_CSV):
         return {}
-
-    wb = openpyxl.load_workbook(RULES_XLSX, read_only=True)
-    rules_by_tank = {}
-    for sname in wb.sheetnames:
-        if sname.startswith("_"):
-            continue
-        ws = wb[sname]
-        headers = [c.value for c in ws[1]]
-        rules = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if not any(row):
-                continue
-            d = {h: ("" if v is None else str(v)) for h, v in zip(headers, row) if h}
-            rules.append(d)
-        if rules:
-            rules_by_tank[sname] = rules
-    return rules_by_tank
+    rules_by_tank = defaultdict(list)
+    with open(RULES_CSV, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            tank = (row.get("標準槽體名稱") or "未分類").strip()
+            # 把 CSV 欄位名稱對應到原本 xlsx 的欄位名稱
+            rule = {
+                "缺失ID": row.get("缺失ID", ""),
+                "來源": row.get("來源", ""),
+                "原文缺失": row.get("原文缺失", ""),
+                "檢查類型": row.get("檢查類型", ""),
+                "對照項目": row.get("對照項目", ""),
+                "規則": row.get("規則", ""),
+                "比對位置": row.get("比對位置", ""),
+                "判定邏輯": row.get("判定邏輯", ""),
+                "技師姓名": row.get("技師姓名", ""),
+                "序號": row.get("序號", ""),
+                "原始槽體代號": row.get("原始槽體代號", ""),
+            }
+            rules_by_tank[tank].append(rule)
+    return dict(rules_by_tank)
 
 
 # ──────────────────────────────────────────────────
