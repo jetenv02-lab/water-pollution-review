@@ -22,15 +22,59 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 直接 import 我們的 v2 抽取器 + 章節動態定位器 + OCR 模組 + 質量平衡檢查器 + 學理檢查器 + 規則庫驅動檢查
-from step2_extract_v2 import extract_application
-from step2b_locate_sections import locate_sections, compress_ranges
-from step2c_ocr_diagram import ocr_diagram_pages
-from step3b_balance_check import run_balance_checks
-from step3c_unit_db import BUSINESS_TYPES
-from step3d_principle_check import run_advanced_checks
-from step3e_rule_driven_check import run_rule_driven_check
-from step4_flow_graph import build_flow_graph, get_unit_neighbors
+# Import 內部模組 - 用 try/except 包起避免單一模組失敗讓整個 App 掛掉
+# (Python 3.14 + Streamlit Cloud 偶發 KeyError 在 module loading)
+_import_errors = []
+
+try:
+    from step2_extract_v2 import extract_application
+except Exception as e:
+    _import_errors.append(("step2_extract_v2", str(e)))
+    extract_application = None
+
+try:
+    from step2b_locate_sections import locate_sections, compress_ranges
+except Exception as e:
+    _import_errors.append(("step2b_locate_sections", str(e)))
+    locate_sections = None
+    def compress_ranges(p): return str(p)
+
+try:
+    from step2c_ocr_diagram import ocr_diagram_pages
+except Exception as e:
+    _import_errors.append(("step2c_ocr_diagram", str(e)))
+    def ocr_diagram_pages(*a, **k): return {"error": f"OCR 模組載入失敗: {_import_errors[-1][1]}"}
+
+try:
+    from step3b_balance_check import run_balance_checks
+except Exception as e:
+    _import_errors.append(("step3b_balance_check", str(e)))
+    def run_balance_checks(*a, **k): return []
+
+try:
+    from step3c_unit_db import BUSINESS_TYPES
+except Exception as e:
+    _import_errors.append(("step3c_unit_db", str(e)))
+    BUSINESS_TYPES = {}
+
+try:
+    from step3d_principle_check import run_advanced_checks
+except Exception as e:
+    _import_errors.append(("step3d_principle_check", str(e)))
+    def run_advanced_checks(*a, **k): return []
+
+try:
+    from step3e_rule_driven_check import run_rule_driven_check
+except Exception as e:
+    _import_errors.append(("step3e_rule_driven_check", str(e)))
+    def run_rule_driven_check(*a, **k): return []
+
+try:
+    from step4_flow_graph import build_flow_graph, get_unit_neighbors
+except Exception as e:
+    _import_errors.append(("step4_flow_graph", str(e)))
+    def build_flow_graph(*a, **k): return {"nodes": [], "edges": [], "wm_sources": [], "discharges": []}
+    def get_unit_neighbors(*a, **k): return {"upstream": [], "downstream": []}
 
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
