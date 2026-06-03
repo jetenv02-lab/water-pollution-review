@@ -30,6 +30,7 @@ from step3b_balance_check import run_balance_checks
 from step3c_unit_db import BUSINESS_TYPES
 from step3d_principle_check import run_advanced_checks
 from step3e_rule_driven_check import run_rule_driven_check
+from step4_flow_graph import build_flow_graph, get_unit_neighbors
 
 # ───────────────────────────── 頁面設定 ─────────────────────────────
 
@@ -354,6 +355,8 @@ with tab1:
                 st.session_state["_pdf_bytes"] = pdf_bytes
                 st.session_state["_pdf_filename"] = uploaded.name
                 st.session_state["_ocr_target_pages"] = ocr_target_pages
+                # 建立水流串接圖
+                st.session_state["_flow_graph"] = build_flow_graph(app_data_local)
 
                 # ─── Step 2: OCR (若有流向圖頁) ───
                 if ocr_target_pages:
@@ -483,6 +486,40 @@ with tab1:
         )
         if selected and selected in app_data["units"]:
             unit = app_data["units"][selected]
+
+            # 顯示水流上下游 (如果有 flow_graph)
+            graph = st.session_state.get("_flow_graph")
+            if graph:
+                nb = get_unit_neighbors(graph, selected)
+                if nb["upstream"] or nb["downstream"]:
+                    st.markdown("##### 🔗 水流串接")
+                    cu, cd = st.columns(2)
+                    with cu:
+                        st.markdown(f"**上游 ({len(nb['upstream'])} 條進入)**")
+                        if nb["upstream"]:
+                            up_rows = [
+                                {"來源單元": u["from_unit"],
+                                 "出流編號": u["from_stream"],
+                                 "→ 進流編號": u["to_stream"]}
+                                for u in nb["upstream"]
+                            ]
+                            st.dataframe(up_rows, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("(無偵測到上游, 可能是原廢水進入點或未串接)")
+                    with cd:
+                        st.markdown(f"**下游 ({len(nb['downstream'])} 條流出)**")
+                        if nb["downstream"]:
+                            dn_rows = [
+                                {"出流編號": d["from_stream"],
+                                 "→ 目標單元": d["to_unit"],
+                                 "目標進流編號": d["to_stream"]}
+                                for d in nb["downstream"]
+                            ]
+                            st.dataframe(dn_rows, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("(無偵測到下游, 可能是放流口或未串接)")
+                    st.divider()
+
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown(f"**單元代號**: {selected}")

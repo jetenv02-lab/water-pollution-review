@@ -125,8 +125,9 @@ UNIT_HEADER_PATTERN = re.compile(
 
 # 頁 19+: 單元序號：T01-01
 UNIT_SEQ_PATTERN = re.compile(r"單元序號[：:]\s*(T\d{2}-\d{2})")
-INFL_CODE_PATTERN = re.compile(r"進流水流編號[：:]\s*(\S+)")
-EFFL_CODE_PATTERN = re.compile(r"出流水流編號[：:]\s*(\S*)")
+# 進出流編號只接受 WT/WM/D 開頭的合法代號, 避免空值後面誤吞「水質項目」標題
+INFL_CODE_PATTERN = re.compile(r"進流水流編號[：:]\s*((?:WT[AB]|WM|D|T)\S*)")
+EFFL_CODE_PATTERN = re.compile(r"出流水流編號[：:]\s*((?:WT[AB]|WM|D|T)\S*)")
 
 # 尺寸列: 長/直徑 寬 高 有效水深 有效容量 數量
 SIZE_DIM_PATTERN = re.compile(
@@ -252,20 +253,43 @@ def parse_facility_page(text, page_index):
 
 
 def parse_quality_page(text):
-    """解析一頁『進出水質資料』，回傳 [(unit_code, infl_code, effl_code, quality_data)]。"""
+    """解析『進出水質資料』(可跨頁), 回傳 [(unit_code, infl_code, effl_code, quality_data)]。
+
+    結構:
+        單元序號：T01-01
+        進出處理單元之水質資料   ← 子區塊 1
+        進流水流編號：WTB01-01-1 出流水流編號：WTA01-01-1
+        [水質表格]
+        進出處理單元之水質資料   ← 子區塊 2 (同一單元的另一股進流)
+        進流水流編號：WTB01-01-2 出流水流編號：
+        [水質表格]
+        進出處理單元之水質資料   ← 子區塊 3...
+        ...
+
+    所以要用「進出處理單元之水質資料」切, 而非「單元序號」(否則一個單元只能抽 1 股)。
+    """
     results = []
-    # 把整頁文字依「進出處理單元之水質資料」切成多個區塊
-    # 因為一頁可能含多個單元的進出流資料
-    blocks = re.split(r"(單元序號[：:]\s*T\d{2}-\d{2})", text)
+    # 用「進出處理單元之水質資料」(或別名) 切; 同時保留切點前的「單元序號」標記
+    # 這樣每個 block 內最多只有一組「進流水流編號」「出流水流編號」, 才能正確抽出多股
+    sub_pattern = re.compile(r"進出處理單元之水質資料|進出處理單元水質資料")
+    parts = sub_pattern.split(text)
+    # parts[0] 是第一個小標題之前的內容(可能含「單元序號：T01-01」)
+    # parts[1..] 每段都是一個「進出處理...」標題之後的內容
+
     current_unit = None
-    for i, blk in enumerate(blocks):
-        m_unit = UNIT_SEQ_PATTERN.match(blk)
+    # 第一段可能含初始 current_unit
+    m_first = UNIT_SEQ_PATTERN.search(parts[0]) if parts else None
+    if m_first:
+        current_unit = m_first.group(1).strip()
+
+    for blk in parts[1:]:
+        # 在 blk 內找新的「單元序號：T0X-XX」如果有 → 更新 current_unit
+        m_unit = UNIT_SEQ_PATTERN.search(blk)
         if m_unit:
             current_unit = m_unit.group(1).strip()
-            continue
         if not current_unit:
             continue
-        # 在 blk 裡找 進流水流/出流水流 編號
+        # 找該 block 的 進流/出流編號
         m_in = INFL_CODE_PATTERN.search(blk)
         m_out = EFFL_CODE_PATTERN.search(blk)
         infl_code = m_in.group(1) if m_in else None
@@ -358,12 +382,23 @@ def extract_application(pdf_path, verbose=True):
                     units[code] = unit
 
         # 解析進出水質 → 加進對應單元
-        for page_idx, text in quality_pages:
-            block_results = parse_quality_page(text)
+        # 修: 把所有 quality_pages 串成一段, 讓 parse_quality_page 的「current_unit」
+        # 狀態能跨頁保留 (例如 T01-01 的多股進流可能跨 3 頁)
+        if quality_pages:
+            # 用特殊分隔符記錄頁碼, 才能還原 page_idx
+            combined_text_parts = []
+            page_markers = []  # [(start_pos, page_idx)]
+            for page_idx, text in quality_pages:
+                page_markers.append((len("\n".join(combined_text_parts)), page_idx))
+                combined_text_parts.append(text)
+            combined_text = "\n".join(combined_text_parts)
+
+            block_results = parse_quality_page(combined_text)
             for r in block_results:
                 code = r["unit_code"]
+                # 找該 result 屬於哪一頁 (用 r 內的 _pos 或 fallback 用第一頁)
+                page_for_record = r.get("_page_idx", quality_pages[0][0])
                 if code not in units:
-                    # 水質頁有提到但設施資料表沒登錄 → 建立精簡 unit
                     units[code] = {
                         "raw_code": code,
                         "name_in_doc": "(僅水質資料)",
@@ -375,10 +410,10 @@ def extract_application(pdf_path, verbose=True):
                         "equipment": [],
                         "influent": {},
                         "effluent": {},
-                        "pages_found": [page_idx + 1],
+                        "pages_found": [page_for_record + 1],
                     }
-                if (page_idx + 1) not in units[code]["pages_found"]:
-                    units[code]["pages_found"].append(page_idx + 1)
+                if (page_for_record + 1) not in units[code]["pages_found"]:
+                    units[code]["pages_found"].append(page_for_record + 1)
                 if r["infl_code"]:
                     units[code]["influent"][r["infl_code"]] = r["infl_quality"]
                 if r["effl_code"]:
