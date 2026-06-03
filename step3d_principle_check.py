@@ -92,7 +92,7 @@ def check_removal_rate_vs_default(unit):
                 "標準槽體": std_tank,
                 "對照項目": item,
                 "描述": f"{item} 實際去除率 {actual_rate:.1f}% {direction}預設 {default_rate}% (差 {abs(diff):.1f} pt)",
-                "依據": f"jetwatersystem 設計準則 {std_tank} 預設 {item} 削減率為 {default_rate}%",
+                "依據": f"環工設計準則 {std_tank} 典型 {item} 削減率為 {default_rate}% (僅供參考,實際值依現場條件而異)",
             })
     return findings
 
@@ -141,7 +141,7 @@ def check_raw_water_vs_typical(app_data):
                     "標準槽體": "原廢水",
                     "對照項目": item,
                     "描述": f"原廢水 {item} 濃度 {c} {default['unit']} 為典型值 ({default_v}) 的 {ratio:.1f} 倍",
-                    "依據": "jetwatersystem 預設原廢水水質參考",
+                    "依據": "原廢水水質典型值對照 (僅供參考)",
                 })
             elif ratio < 0.1:
                 findings.append({
@@ -151,7 +151,7 @@ def check_raw_water_vs_typical(app_data):
                     "標準槽體": "原廢水",
                     "對照項目": item,
                     "描述": f"原廢水 {item} 濃度 {c} {default['unit']} 為典型值 ({default_v}) 的 {ratio:.3f} 倍 (偏低)",
-                    "依據": "jetwatersystem 預設原廢水水質參考",
+                    "依據": "原廢水水質典型值對照 (僅供參考)",
                 })
     return findings
 
@@ -187,7 +187,7 @@ def check_business_type_items(app_data, business_type):
                 "標準槽體": f"事業類別: {business_type}",
                 "對照項目": m["item"],
                 "描述": f"事業類別 [{business_type}] 之 {m['category']} 應申報 {m['item']} (頻率: {m['frequency']}), 但申請文件未見此項目",
-                "依據": "jetwatersystem 事業類別申報項目對照表",
+                "依據": f"水污染防治法事業類別申報項目對照表 (事業類別: {business_type})",
             })
     return findings
 

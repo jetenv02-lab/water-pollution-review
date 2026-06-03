@@ -375,7 +375,7 @@ with tab1:
                 status.info("Step 3/3: 執行智能審查 (3 層檢查)...")
                 progress.progress(82, text="Step 3.1: 質量平衡檢查...")
                 findings_basic = run_balance_checks(app_data_local)
-                progress.progress(88, text="Step 3.2: 學理檢查 (jetwatersystem 設計準則)...")
+                progress.progress(88, text="Step 3.2: 學理檢查 (環工設計準則)...")
                 bt = None if business_type == "(不檢查)" else business_type
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
                 progress.progress(94, text="Step 3.3: 規則庫驅動檢查 (299 筆環工技師缺失)...")
@@ -555,7 +555,7 @@ with tab1:
         st.divider()
         st.subheader("智能審查結果")
         st.caption(
-            "根據環工技師 299 筆查核缺失 + jetwatersystem 設計準則的學理規則。"
+            "根據環工技師 299 筆查核缺失歸納的學理規則。"
             " 結果依「審查類型」分組,涵蓋質量平衡/機具設施/設計參數/去除率等多面向。"
         )
 
@@ -656,10 +656,12 @@ with tab1:
         if not findings:
             st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
 
+        # 把 Counter 轉為 dict 給 JSON 序列化
         findings_json = json.dumps({
             "source": st.session_state.get("_pdf_filename", "?"),
             "total_findings": len(findings),
-            "stats": stats,
+            "severity_stats": dict(sev_counter),
+            "type_stats": dict(type_counter),
             "findings": findings,
         }, ensure_ascii=False, indent=2)
         st.download_button(
