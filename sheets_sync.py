@@ -128,6 +128,96 @@ def check_auth_status():
 
 
 # ──────────────────────────────────────────────────
+# _來源清單 自動統計
+# ──────────────────────────────────────────────────
+
+def refresh_source_list_stats():
+    """重新計算 _來源清單 的「涵蓋槽體數 / 貢獻規則數 / 最後同步時間」欄。
+
+    從各槽體分頁掃出每個「來源代號」的統計, 寫回 _來源清單。
+    若 _來源清單 不存在或結構不符 (沒有自動欄), 就跳過。
+
+    Returns:
+        dict: {ok, updated_count, error}
+    """
+    from collections import defaultdict
+    from openpyxl import load_workbook
+
+    if not os.path.exists(RULES_XLSX):
+        return {"ok": False, "error": "xlsx 不存在"}
+
+    try:
+        wb = load_workbook(RULES_XLSX)
+    except Exception as e:
+        return {"ok": False, "error": f"無法打開 xlsx: {e}"}
+
+    if "_來源清單" not in wb.sheetnames:
+        return {"ok": False, "error": "_來源清單 分頁不存在"}
+
+    # 從各槽體分頁統計來源
+    stats = defaultdict(lambda: {"tanks": set(), "rule_count": 0})
+    for sn in wb.sheetnames:
+        if sn.startswith("_"):
+            continue
+        ws = wb[sn]
+        if ws.max_row < 2:
+            continue
+        headers = [c.value for c in ws[1]]
+        try:
+            source_idx = headers.index("來源") + 1
+        except ValueError:
+            continue
+        for row in range(2, ws.max_row + 1):
+            source = ws.cell(row=row, column=source_idx).value
+            if not source:
+                continue
+            source_str = str(source).strip()
+            code = source_str.split()[0] if source_str else ""
+            if not code.startswith("S"):
+                code = "S01"
+            stats[code]["tanks"].add(sn)
+            stats[code]["rule_count"] += 1
+
+    # 更新 _來源清單
+    ws_src = wb["_來源清單"]
+    headers_src = [c.value for c in ws_src[1]]
+    if "涵蓋槽體數" not in headers_src or "貢獻規則數" not in headers_src:
+        return {"ok": False, "error": "_來源清單 沒有自動欄 (請先跑 setup_source_list_v3.py)"}
+
+    code_idx = headers_src.index("來源代號") + 1
+    tank_count_idx = headers_src.index("涵蓋槽體數") + 1
+    rule_count_idx = headers_src.index("貢獻規則數") + 1
+    sync_time_idx = (headers_src.index("最後同步時間") + 1
+                     if "最後同步時間" in headers_src else None)
+
+    sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated = 0
+    for row in range(2, ws_src.max_row + 1):
+        code = ws_src.cell(row=row, column=code_idx).value
+        if not code:
+            continue
+        code = str(code).strip()
+        if code in stats:
+            ws_src.cell(row=row, column=tank_count_idx, value=len(stats[code]["tanks"]))
+            ws_src.cell(row=row, column=rule_count_idx, value=stats[code]["rule_count"])
+            if sync_time_idx:
+                ws_src.cell(row=row, column=sync_time_idx, value=sync_time)
+            updated += 1
+        else:
+            # 該來源在槽體分頁找不到任何規則
+            ws_src.cell(row=row, column=tank_count_idx, value=0)
+            ws_src.cell(row=row, column=rule_count_idx, value=0)
+            if sync_time_idx:
+                ws_src.cell(row=row, column=sync_time_idx, value=sync_time)
+
+    wb.save(RULES_XLSX)
+    return {"ok": True, "updated_count": updated, "stats": {
+        code: {"tank_count": len(s["tanks"]), "rule_count": s["rule_count"]}
+        for code, s in stats.items()
+    }}
+
+
+# ──────────────────────────────────────────────────
 # xlsx 讀寫工具
 # ──────────────────────────────────────────────────
 
@@ -275,10 +365,15 @@ def list_backups():
 def upload_xlsx_to_sheets(sheet_id=None):
     """把 規則庫.xlsx 整份推到 Google Sheet, 每個分頁對應。
 
+    上傳前會自動更新 _來源清單 的統計欄位。
+
     Returns:
         dict: {ok, sheets_written: [(name, rows, cols)], sheet_url, source, error}
     """
     sheet_id = sheet_id or DEFAULT_SHEET_ID
+
+    # 先重算來源清單統計 (讓 Sheet 上看到的數字也是新的)
+    refresh_source_list_stats()
 
     try:
         sheets_data, sheet_order = _read_xlsx_to_dict()
@@ -425,6 +520,9 @@ def download_sheets_to_xlsx(sheet_id=None):
 
         # 寫回 xlsx
         _write_xlsx_from_dict(sheets_data, sheet_order)
+
+        # 重算 _來源清單 統計 (同事可能新增了規則)
+        refresh_source_list_stats()
 
         # 順便重新 export csv
         export_result = export_xlsx_to_csv()
