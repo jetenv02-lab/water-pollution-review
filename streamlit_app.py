@@ -1146,23 +1146,74 @@ with tab1:
                            for e in unit["equipment"]]
                 st.dataframe(eq_rows, width="stretch", hide_index=True)
 
+            # ── 從示意圖解析結果建立 stream → Q (CMD) 對照表 ──
+            # 不用反推/計算; 直接用圖上標的 Q = XXX CMD
+            stream_q_map = {}
+            _fr = st.session_state.get("_flow_extract_result")
+            if _fr:
+                # 1) 主流向 (Gemini 抽出, 帶 from_stream / to_stream / Q_cmd)
+                for f in _fr.get("all_flows", []) or []:
+                    q = f.get("Q_cmd")
+                    if q is None:
+                        continue
+                    for k in ("from_stream", "to_stream"):
+                        code = f.get(k)
+                        if code:
+                            stream_q_map.setdefault(str(code), q)
+                # 2) 外部進入 (WMxx → WTBxx-yy-z)
+                for ei in _fr.get("external_inputs", []) or []:
+                    q = ei.get("Q_cmd")
+                    if q is None:
+                        continue
+                    for k in ("code", "to_stream"):
+                        code = ei.get(k)
+                        if code:
+                            stream_q_map.setdefault(str(code), q)
+                # 3) 放流口 (WTAxx-yy-z → Dxx)
+                for dp in _fr.get("discharge_points", []) or []:
+                    q = dp.get("Q_cmd")
+                    if q is None:
+                        continue
+                    for k in ("code", "from_stream"):
+                        code = dp.get(k)
+                        if code:
+                            stream_q_map.setdefault(str(code), q)
+
+            def _fmt_q_label(stream_code):
+                """編號旁邊的 Q 標籤 — 沒對到就空字串。"""
+                q = stream_q_map.get(str(stream_code))
+                if q is None:
+                    return ""
+                try:
+                    return f" · Q = {float(q):g} CMD"
+                except (TypeError, ValueError):
+                    return f" · Q = {q} CMD"
+
             if unit.get("influent"):
-                st.markdown(f"**進流水質** ({len(unit['influent'])} 流向)")
-                for infl_code, qdata in unit["influent"].items():
-                    st.caption(f"📥 {infl_code}")
-                    q_rows = [{"水質項目": str(k),
-                               "濃度": str(v.get("濃度", v.get("範圍", ""))),
-                               "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
-                    st.dataframe(q_rows, width="stretch", hide_index=True)
+                _hint = " (Q 來自示意圖解析)" if stream_q_map else " (尚未跑示意圖解析, 無 Q)"
+                st.markdown(f"**進流水質** ({len(unit['influent'])} 流向){_hint}")
+                infl_items = list(unit["influent"].items())
+                for i, (infl_code, qdata) in enumerate(infl_items):
+                    q_label = _fmt_q_label(infl_code)
+                    # 第一條預設展開, 其他收起
+                    expanded = (i == 0)
+                    with st.expander(f"📥 **{infl_code}**{q_label}", expanded=expanded):
+                        q_rows = [{"水質項目": str(k),
+                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
+                        st.dataframe(q_rows, width="stretch", hide_index=True)
 
             if unit.get("effluent"):
                 st.markdown(f"**出流水質** ({len(unit['effluent'])} 流向)")
-                for effl_code, qdata in unit["effluent"].items():
-                    st.caption(f"📤 {effl_code}")
-                    q_rows = [{"水質項目": str(k),
-                               "濃度": str(v.get("濃度", v.get("範圍", ""))),
-                               "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
-                    st.dataframe(q_rows, width="stretch", hide_index=True)
+                effl_items = list(unit["effluent"].items())
+                for i, (effl_code, qdata) in enumerate(effl_items):
+                    q_label = _fmt_q_label(effl_code)
+                    expanded = (i == 0)
+                    with st.expander(f"📤 **{effl_code}**{q_label}", expanded=expanded):
+                        q_rows = [{"水質項目": str(k),
+                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
+                        st.dataframe(q_rows, width="stretch", hide_index=True)
 
             # 削減率分項表 (本單元的所有水質項目)
             if _urr:
@@ -1354,51 +1405,97 @@ with tab1:
             st.error(f"OCR 失敗: {ocr_result['error']}")
         else:
             summary = ocr_result["summary"]
-            st.success(
-                f"OCR 完成! 識別 {summary['total_units']} 個單元、"
-                f"{summary['total_flows']} 個流量、"
-                f"{summary['total_doses']} 個加藥、"
-                f"{summary['total_moistures']} 個含水率"
-            )
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("單元", summary["total_units"])
-            c2.metric("流量(Q)", summary["total_flows"])
-            c3.metric("加藥", summary["total_doses"])
-            c4.metric("含水率", summary["total_moistures"])
+            with st.expander(
+                f"📷 **OCR 識別結果** — "
+                f"{summary['total_units']} 單元 / "
+                f"{summary['total_flows']} 流量 / "
+                f"{summary['total_doses']} 加藥 / "
+                f"{summary['total_moistures']} 含水率  (點此展開)",
+                expanded=False,
+            ):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("單元", summary["total_units"])
+                c2.metric("流量(Q)", summary["total_flows"])
+                c3.metric("加藥", summary["total_doses"])
+                c4.metric("含水率", summary["total_moistures"])
 
-            if ocr_result.get("all_flows"):
-                st.markdown("**識別到的流量 Q (CMD):**")
-                flow_rows = [
-                    {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
-                    for f in ocr_result["all_flows"]
-                ]
-                st.dataframe(flow_rows, width="stretch", hide_index=True)
+                # 用座標找最近的單元 — 給每個 OCR 結果關聯一個對應單元
+                ocr_units = ocr_result.get("all_units", [])
+                def _nearest_unit(item):
+                    """找跟 (x, y) 最近的單元代號 (Manhattan 距離)。"""
+                    if not ocr_units:
+                        return ""
+                    ix, iy = item.get("x", 0), item.get("y", 0)
+                    best = None
+                    best_d = float("inf")
+                    for u in ocr_units:
+                        dx = abs(u.get("x", 0) - ix)
+                        dy = abs(u.get("y", 0) - iy)
+                        d = dx + dy
+                        if d < best_d:
+                            best_d = d
+                            best = u.get("code", "")
+                    # 距離太遠 (>500 px) 就不認為有對應
+                    return best if best_d < 500 else ""
 
-            if ocr_result.get("all_doses"):
-                st.markdown("**識別到的加藥量:**")
-                dose_rows = [
-                    {"化學品": str(d["chemical"]), "用量": str(d["amount"]),
-                     "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
-                    for d in ocr_result["all_doses"]
-                ]
-                st.dataframe(dose_rows, width="stretch", hide_index=True)
+                if ocr_result.get("all_flows"):
+                    with st.expander(
+                        f"💧 識別到的流量 Q (CMD) — {len(ocr_result['all_flows'])} 筆",
+                        expanded=True,
+                    ):
+                        flow_rows = [
+                            {
+                                "對應單元": _nearest_unit(f) or "(未對應)",
+                                "Q (CMD)": str(f["q"]),
+                                "OCR 原文": str(f["text"]),
+                            }
+                            for f in ocr_result["all_flows"]
+                        ]
+                        st.dataframe(flow_rows, width="stretch", hide_index=True)
 
-            if ocr_result.get("all_moistures"):
-                st.markdown("**識別到的含水率:**")
-                mois_rows = [
-                    {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
-                    for m in ocr_result["all_moistures"]
-                ]
-                st.dataframe(mois_rows, width="stretch", hide_index=True)
+                if ocr_result.get("all_doses"):
+                    with st.expander(
+                        f"💊 識別到的加藥量 — {len(ocr_result['all_doses'])} 筆",
+                        expanded=False,
+                    ):
+                        dose_rows = [
+                            {
+                                "對應單元": _nearest_unit(d) or "(未對應)",
+                                "化學品": str(d["chemical"]),
+                                "用量": str(d["amount"]),
+                                "單位": str(d.get("unit", "")),
+                                "OCR 原文": str(d["text"]),
+                            }
+                            for d in ocr_result["all_doses"]
+                        ]
+                        st.dataframe(dose_rows, width="stretch", hide_index=True)
 
-            if ocr_result.get("all_units"):
-                with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
-                    unit_rows = [
-                        {"代號": str(u["code"]), "OCR 原文": str(u["text"])}
-                        for u in ocr_result["all_units"]
-                    ]
-                    st.dataframe(unit_rows, width="stretch", hide_index=True)
+                if ocr_result.get("all_moistures"):
+                    with st.expander(
+                        f"💦 識別到的含水率 — {len(ocr_result['all_moistures'])} 筆",
+                        expanded=False,
+                    ):
+                        mois_rows = [
+                            {
+                                "對應單元": _nearest_unit(m) or "(未對應)",
+                                "含水率 (%)": str(m["value_pct"]),
+                                "OCR 原文": str(m["text"]),
+                            }
+                            for m in ocr_result["all_moistures"]
+                        ]
+                        st.dataframe(mois_rows, width="stretch", hide_index=True)
+
+                if ocr_result.get("all_units"):
+                    with st.expander(
+                        f"📦 OCR 識別到的單元代號 — {len(ocr_result['all_units'])} 筆",
+                        expanded=False,
+                    ):
+                        unit_rows = [
+                            {"代號": str(u["code"]), "OCR 原文": str(u["text"])}
+                            for u in ocr_result["all_units"]
+                        ]
+                        st.dataframe(unit_rows, width="stretch", hide_index=True)
 
             pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
             base_ocr = os.path.splitext(pdf_name)[0]
