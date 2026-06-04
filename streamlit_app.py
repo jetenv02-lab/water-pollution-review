@@ -1167,9 +1167,39 @@ with tab_import:
                 else:
                     st.warning(f"⚠️ {g_status['message']}")
                     st.info(
-                        "請在 Streamlit Cloud Secrets 加上一行:\n\n"
-                        "```\ngemini_api_key = \"AQ.xxxxx\"\n```"
+                        "請在 Streamlit Cloud Secrets 加上一行 "
+                        "(必須在 `[gcp_service_account]` block **之後** 留空一行再加):\n\n"
+                        "```toml\n"
+                        "[gcp_service_account]\n"
+                        "...\n"
+                        "universe_domain = \"googleapis.com\"\n"
+                        "\n"
+                        "gemini_api_key = \"AQ.xxxxx\"\n"
+                        "```\n\n"
+                        "貼完按 Save → 線上版會自動重啟 (或右上「⋮ → Reboot app」強制)"
                     )
+                    # debug: 顯示 st.secrets 看得到的 top-level key 名稱 (不顯示值)
+                    available = g_status.get("available_keys", [])
+                    if available:
+                        st.caption(
+                            f"🔍 **Debug** — 系統在 `st.secrets` 看到的 key 名稱: "
+                            f"`{available}`"
+                        )
+                        if "gemini_api_key" in available:
+                            st.error(
+                                "⚠️ key 看得到, 但讀取失敗 (可能是程式 bug, 截圖給開發者)"
+                            )
+                        elif "gcp_service_account" in available and len(available) == 1:
+                            st.warning(
+                                "⚠️ 只看到 `gcp_service_account`, 沒有 `gemini_api_key`. "
+                                "可能 `gemini_api_key` 跑到 block **裡面** 了, "
+                                "請在 `universe_domain = \"...\"` 那行**下一行**留空, "
+                                "再下一行才寫 `gemini_api_key = \"...\"`"
+                            )
+                        else:
+                            st.info(
+                                "可能 Secrets 還沒生效, 試試右上 ⋮ → Reboot app"
+                            )
 
                 uploaded_pdf = st.file_uploader(
                     "拖 PDF 到這裡 (審查意見書)",

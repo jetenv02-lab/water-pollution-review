@@ -51,29 +51,52 @@ GEMINI_MODEL = "gemini-2.0-flash-exp"  # Flash 便宜快
 # ──────────────────────────────────────────────────
 
 def _get_gemini_api_key():
-    """取得 Gemini API key。優先 Streamlit Secrets, 再 env var。"""
+    """取得 Gemini API key。優先 Streamlit Secrets, 再 env var。
+
+    支援多種 key 名稱:
+        gemini_api_key, GEMINI_API_KEY, google_api_key, GOOGLE_API_KEY
+    """
+    KEY_NAMES = ["gemini_api_key", "GEMINI_API_KEY", "google_api_key", "GOOGLE_API_KEY"]
+
     try:
         import streamlit as st
-        if "gemini_api_key" in st.secrets:
-            return str(st.secrets["gemini_api_key"]), "streamlit"
+        for name in KEY_NAMES:
+            if name in st.secrets:
+                return str(st.secrets[name]), "streamlit"
+        # 找不到 → 試 [gemini] block
+        if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
+            return str(st.secrets["gemini"]["api_key"]), "streamlit:[gemini]"
     except Exception:
         pass
 
-    key = os.environ.get("GEMINI_API_KEY")
-    if key:
-        return key, "env"
+    for name in KEY_NAMES:
+        key = os.environ.get(name)
+        if key:
+            return key, "env"
 
     return None, None
+
+
+def list_available_secret_keys():
+    """列出 Streamlit Secrets 裡所有可見的 top-level key (debug 用, 不顯示值)。"""
+    try:
+        import streamlit as st
+        return list(st.secrets.keys())
+    except Exception as e:
+        return [f"(無法讀取 secrets: {e})"]
 
 
 def check_gemini_status():
     """檢查 Gemini API 設定狀態。"""
     key, source = _get_gemini_api_key()
     if not key:
+        # debug: 列出所有看得到的 secret key 名稱
+        available = list_available_secret_keys()
         return {
             "ok": False,
             "source": None,
             "message": "未設定 Gemini API key",
+            "available_keys": available,
         }
     # 不顯示完整 key, 只顯示前後 4 字元
     masked = f"{key[:6]}...{key[-4:]}" if len(key) > 15 else "***"
