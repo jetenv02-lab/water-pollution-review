@@ -582,6 +582,213 @@ with tab1:
                     pass
 
     # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
+    # ── 水量平衡示意圖解析 (Gemini Vision 抽結構化流向) ──
+    pdf_bytes_for_flow = st.session_state.get("_pdf_bytes")
+    if pdf_bytes_for_flow:
+        with st.expander("📊 水量平衡示意圖解析 (跨單元流向 + 質平檢核)", expanded=False):
+            st.caption(
+                "從申請文件的「參、水污染防治措施資料 / 水質水量平衡示意圖」抽出流向結構,"
+                " 可得知: 每個單元有幾條進流/出流、來源/去處、流量 Q, 並做跨單元質量平衡檢核。"
+            )
+
+            try:
+                import flow_diagram_extractor as _fde
+                import gemini_extractor as _ge_chk
+                fde_ok = True
+            except Exception as _fe:
+                st.error(f"無法載入 flow_diagram_extractor: {_fe}")
+                fde_ok = False
+
+            if fde_ok:
+                _fstat = _ge_chk.check_gemini_status()
+                if not _fstat["ok"]:
+                    st.warning(f"⚠️ {_fstat['message']} — 此功能需要 Gemini Vision")
+                else:
+                    # 偵測圖頁
+                    loc = _fde.find_balance_diagram_pages(pdf_bytes_for_flow)
+                    if loc.get("ok") and loc.get("image_pages"):
+                        img_pages = loc["image_pages"]
+                        st.info(
+                            f"📍 找到 **{len(img_pages)}** 張水量平衡示意圖頁: "
+                            f"p{', p'.join(map(str, img_pages))}"
+                        )
+                        max_pages = st.slider(
+                            "處理頁數 (省 token, 先測一張看效果)",
+                            min_value=1, max_value=len(img_pages),
+                            value=min(2, len(img_pages)),
+                            key="_flow_max_pages",
+                            help=f"每張圖約 $0.002~0.005, 共 {len(img_pages)} 張全跑約 ${len(img_pages) * 0.005:.3f}"
+                        )
+
+                        if "_flow_extract_result" not in st.session_state:
+                            st.session_state["_flow_extract_result"] = None
+
+                        if st.button("🤖 開始解析", type="primary", key="_btn_flow_extract",
+                                     width="stretch"):
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            def _cb(cur, tot, msg):
+                                pct = (cur / tot) if tot else 0
+                                progress_bar.progress(min(pct, 1.0), text=msg)
+                                status_text.caption(f"[{cur}/{tot}] {msg}")
+                            with st.spinner("Gemini Vision 處理中…"):
+                                fr = _fde.extract_all_balance_diagrams(
+                                    pdf_bytes_for_flow,
+                                    max_pages=max_pages,
+                                    progress_callback=_cb,
+                                )
+                            progress_bar.empty()
+                            status_text.empty()
+                            st.session_state["_flow_extract_result"] = fr
+
+                        fr = st.session_state.get("_flow_extract_result")
+                        if fr:
+                            if not fr.get("ok"):
+                                st.error(f"❌ 失敗 ({fr.get('stage')}): {fr.get('error')}")
+                            else:
+                                usage = fr.get("gemini_usage", {})
+                                st.success(
+                                    f"✅ 處理 {fr['pages_processed']} 頁 / "
+                                    f"抽出 **{len(fr['all_units'])}** 單元 / "
+                                    f"**{len(fr['all_flows'])}** 流向 / "
+                                    f"**{len(fr['all_external_inputs'])}** 外部輸入 / "
+                                    f"**{len(fr['all_discharge_points'])}** 放流口"
+                                )
+                                st.caption(
+                                    f"Token: in={usage.get('input_tokens', '?')} "
+                                    f"out={usage.get('output_tokens', '?')}"
+                                )
+
+                                if fr.get("errors"):
+                                    with st.expander(f"⚠️ {len(fr['errors'])} 頁解析失敗"):
+                                        for e in fr["errors"]:
+                                            st.caption(f"p{e['page']}: {e['error'][:100]}")
+
+                                tabs = st.tabs([
+                                    "🌊 流向總表", "📦 單元清單",
+                                    "⚖️ 質平檢核", "🔄 跟系統比對",
+                                    "📄 各頁原始 JSON",
+                                ])
+
+                                with tabs[0]:
+                                    import pandas as _pd
+                                    if fr["all_flows"]:
+                                        df_f = _pd.DataFrame(fr["all_flows"]).astype(str)
+                                        st.dataframe(df_f, use_container_width=True, hide_index=True)
+                                    else:
+                                        st.info("沒有抽到流向")
+
+                                    if fr["all_external_inputs"]:
+                                        st.markdown("**📥 外部原廢水 (WM)**")
+                                        st.dataframe(
+                                            _pd.DataFrame(fr["all_external_inputs"]).astype(str),
+                                            use_container_width=True, hide_index=True
+                                        )
+
+                                    if fr["all_discharge_points"]:
+                                        st.markdown("**📤 放流口 (D)**")
+                                        st.dataframe(
+                                            _pd.DataFrame(fr["all_discharge_points"]).astype(str),
+                                            use_container_width=True, hide_index=True
+                                        )
+
+                                with tabs[1]:
+                                    if fr["all_units"]:
+                                        import pandas as _pd
+                                        df_u = _pd.DataFrame(fr["all_units"]).astype(str)
+                                        st.dataframe(df_u, use_container_width=True, hide_index=True)
+                                        st.caption(f"圖中共 {len(fr['all_units'])} 個處理單元")
+                                    else:
+                                        st.info("沒有抽到單元")
+
+                                with tabs[2]:
+                                    bal = _fde.check_water_balance(fr)
+                                    s = bal["summary"]
+                                    cb1, cb2, cb3, cb4 = st.columns(4)
+                                    cb1.metric("總單元", s["total_units"])
+                                    cb2.metric("✅ 平衡 (<1%)", s["balanced_count"])
+                                    cb3.metric("⚠️ 偏差 (1~5%)", s["warning_count"])
+                                    cb4.metric("❌ 異常 (>5%)", s["error_count"])
+
+                                    rows_b = []
+                                    for code, info in bal["by_unit"].items():
+                                        rows_b.append({
+                                            "單元": code,
+                                            "Σ進流 (CMD)": info["in_total_cmd"],
+                                            "Σ出流 (CMD)": info["out_total_cmd"],
+                                            "差異 (%)": info["diff_pct"],
+                                            "警告": info["warning"] or "",
+                                        })
+                                    if rows_b:
+                                        import pandas as _pd
+                                        st.dataframe(
+                                            _pd.DataFrame(rows_b).astype(str),
+                                            use_container_width=True, hide_index=True
+                                        )
+
+                                with tabs[3]:
+                                    # 跟現有 app_data 比對
+                                    app_data_cmp = st.session_state.get("_app_data") or {}
+                                    if not app_data_cmp:
+                                        st.info("尚未做完整審查, 先按上方「開始完整審查」")
+                                    else:
+                                        sys_units = set(app_data_cmp.get("units", {}).keys())
+                                        img_units = {u["code"] for u in fr["all_units"]}
+                                        only_in_sys = sys_units - img_units
+                                        only_in_img = img_units - sys_units
+                                        both = sys_units & img_units
+
+                                        cmp1, cmp2, cmp3 = st.columns(3)
+                                        cmp1.metric("共同有", len(both))
+                                        cmp2.metric("僅系統有", len(only_in_sys))
+                                        cmp3.metric("僅圖中有", len(only_in_img))
+
+                                        if only_in_img:
+                                            st.warning(
+                                                f"圖上有但系統沒抽到的單元: {', '.join(sorted(only_in_img))}"
+                                            )
+                                        if only_in_sys:
+                                            st.caption(
+                                                f"系統有但圖上沒看到 (可能是污泥/反洗等支線): "
+                                                f"{', '.join(sorted(only_in_sys))}"
+                                            )
+
+                                        # 比對進流數
+                                        st.markdown("**進流數比對 (圖中 vs 系統抽取)**")
+                                        cmp_rows = []
+                                        in_cnt_img = {}
+                                        for flow in fr["all_flows"]:
+                                            to_u = flow.get("to_unit")
+                                            if to_u:
+                                                in_cnt_img[to_u] = in_cnt_img.get(to_u, 0) + 1
+                                        for ext in fr["all_external_inputs"]:
+                                            to_u = ext.get("to_unit")
+                                            if to_u:
+                                                in_cnt_img[to_u] = in_cnt_img.get(to_u, 0) + 1
+                                        for code in sorted(both):
+                                            sys_in = len(app_data_cmp["units"][code].get("influent", {}))
+                                            img_in = in_cnt_img.get(code, 0)
+                                            cmp_rows.append({
+                                                "單元": code,
+                                                "圖中進流數": img_in,
+                                                "系統抽取進流數": sys_in,
+                                                "差異": img_in - sys_in,
+                                                "備註": "✅" if img_in == sys_in else "⚠️ 不一致",
+                                            })
+                                        if cmp_rows:
+                                            import pandas as _pd
+                                            st.dataframe(
+                                                _pd.DataFrame(cmp_rows).astype(str),
+                                                use_container_width=True, hide_index=True
+                                            )
+
+                                with tabs[4]:
+                                    for pr in fr.get("per_page_results", []):
+                                        st.markdown(f"**p{pr['page']} - {pr.get('system_title', '')}**")
+                                        st.json(pr["data"])
+                    else:
+                        st.caption("此 PDF 沒找到水量平衡示意圖純圖頁")
+
     # ── 補充: 圖片局部判讀 (Gemini Vision) ──
     with st.expander("📷 補充: 上傳圖片做局部判讀 (Gemini Vision)", expanded=False):
         st.caption(
