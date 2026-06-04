@@ -373,7 +373,7 @@ with st.sidebar:
             for mod, err in _import_errors:
                 st.caption(f"**{mod}**: {err[:150]}")
 
-# ───────── 全頁面 busy 橫幅 (置頂,不論在哪個 tab 都會看到) ─────────
+# ───────── 全頁面 busy overlay + 停止偵測 ─────────
 # Streamlit 的執行模型: 每次 widget 互動都會 rerun 整個 script;
 # 若上一次審查中按了其他 widget (如 file_uploader 換檔), 那次審查的 thread
 # 會被中斷, try/finally 沒走完 → _busy 卡在 True。
@@ -382,17 +382,33 @@ with st.sidebar:
 #   - 每次 rerun 進來, 若 _busy=True 但 _busy_run_id 是 N 秒前的舊值, 視為中斷
 import time as _time_busy
 _now_ts = _time_busy.time()
+
+# 上次 rerun 不是審查本身, 但 _busy=True → 中斷殘留, 自動解鎖
 if st.session_state.get("_busy", False):
     _bid = st.session_state.get("_busy_run_id", 0)
-    # 5 分鐘 (300 秒) 內視為「正在跑」, 超過就當作中斷殘留
+    # 5 分鐘內視為「真正在跑」, 超過就當作殘留
+    # (註: 一旦使用者點了「🛑 停止審查」按鈕, rerun 進來這條會走 cancel 分支)
     if _now_ts - _bid > 300:
         st.session_state["_busy"] = False
         st.session_state.pop("_busy_run_id", None)
-        st.warning("⚠️ 偵測到上次審查被中途中斷 (可能是頁面操作觸發 rerun),已解鎖。請重新點「開始完整審查」。")
-    else:
-        st.error(
-            "⏳ **系統忙碌中,請勿關閉/重整頁面/換上傳檔案/點其他按鈕** — 可能會中斷處理"
-        )
+        st.warning("⚠️ 偵測到上次審查被中途中斷,已解鎖。請重新點「開始完整審查」。")
+
+# 若使用者點過停止鈕 → 顯示已停止
+if st.session_state.pop("_cancel_just_done", False):
+    st.warning("🛑 審查已停止。已完成的步驟結果有保留, 你可重新點「開始完整審查」繼續。")
+
+# 審查成功完成 → 顯示成功訊息
+_rjd = st.session_state.pop("_review_just_done", None)
+if _rjd:
+    st.success(
+        f"✅ **基本審查已完成**! 共 {_rjd['units']} 單元 · "
+        f"找出 {_rjd['unreasonable']} 項不合理 / {_rjd['manual']} 項待人工複核 · "
+        f"耗時 {_rjd['elapsed']} 秒"
+    )
+    st.info(
+        "💡 **下一步**: 你可以繼續往下捲動,展開「📊 水量平衡示意圖解析」 "
+        "讓 Gemini Vision 讀流向圖, 得到跨單元的完整流向結構 + 質量平衡檢核"
+    )
 
 tab1, tab2, tab_sync, tab_import, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "🔄 規則庫管理", "📥 匯入新規則", "📖 使用說明"])
 
@@ -526,17 +542,100 @@ with tab1:
                     return f"約 {remaining:.0f} 秒"
                 return f"約 {remaining/60:.1f} 分鐘"
 
-            progress = st.progress(0, text="準備中...")
-            status = st.empty()
+            # ─── 全頁 overlay (CSS) 蓋住整個畫面, 中央顯示審查中 + 停止鈕 ───
+            # 用 fixed position + 高 z-index 蓋掉 main + sidebar + tab 列
+            st.markdown("""
+            <style>
+            .reviewing-overlay {
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(15, 23, 42, 0.85);
+                z-index: 9999;
+                display: flex; align-items: center; justify-content: center;
+                backdrop-filter: blur(4px);
+            }
+            .reviewing-card {
+                background: white;
+                border-radius: 16px;
+                padding: 32px 40px;
+                max-width: 560px; width: 90%;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+                text-align: center;
+            }
+            .reviewing-card h2 { margin: 0 0 8px 0; font-size: 22px; color: #1e293b; }
+            .reviewing-card .sub { color: #64748b; font-size: 14px; margin-bottom: 18px; }
+            .reviewing-card .stage {
+                background: #eff6ff; color: #1d4ed8;
+                padding: 12px 16px; border-radius: 8px;
+                font-weight: 600; margin: 12px 0;
+                border-left: 4px solid #2563eb;
+                text-align: left;
+            }
+            .reviewing-card .pct {
+                font-size: 36px; font-weight: 700; color: #2563eb;
+                margin: 8px 0 4px 0;
+            }
+            .reviewing-card .bar-bg {
+                background: #e2e8f0; border-radius: 999px; height: 10px;
+                overflow: hidden; margin: 8px 0 16px 0;
+            }
+            .reviewing-card .bar-fill {
+                background: linear-gradient(90deg, #3b82f6, #2563eb);
+                height: 100%; border-radius: 999px;
+                transition: width 0.3s ease;
+            }
+            .reviewing-card .eta {
+                color: #64748b; font-size: 13px;
+                display: flex; justify-content: space-between; margin-top: 4px;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+
+            # 這個 placeholder 會被各 step 不斷更新 (inject HTML)
+            overlay_slot = st.empty()
+            # 停止鈕 — 用獨立 form, 點下去會 rerun → 中斷正在跑的 Python 主執行緒
+            cancel_slot = st.empty()
+
+            def _render_overlay(percent, stage_text, eta_text):
+                """更新 overlay 內容。"""
+                overlay_slot.markdown(f"""
+                <div class="reviewing-overlay">
+                  <div class="reviewing-card">
+                    <h2>🔍 審查進行中</h2>
+                    <div class="sub">請勿關閉頁面 · 切勿點頁面其他按鈕</div>
+                    <div class="stage">{stage_text}</div>
+                    <div class="pct">{percent}%</div>
+                    <div class="bar-bg"><div class="bar-fill" style="width: {percent}%;"></div></div>
+                    <div class="eta"><span>已耗時 {int(_time.time() - t_start)} 秒</span><span>剩餘 {eta_text}</span></div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # 停止鈕 — 用 form 確保只有 submit 才 rerun, 而非每次互動
+            with cancel_slot.container():
+                # 用 columns 把按鈕推到右下角
+                _cc1, _cc2, _cc3 = st.columns([3, 2, 1])
+                with _cc3:
+                    if st.button("🛑 停止審查",
+                                 key=f"_stop_btn_{int(t_start)}",
+                                 type="secondary",
+                                 help="會中斷剩下的步驟, 已完成的結果會保留"):
+                        # 設 cancel flag, 但因為這個 button click 本身就會觸發 rerun
+                        # 中斷正在跑的審查 thread, 所以直接 set flag + rerun
+                        st.session_state["_cancel_requested"] = True
+                        st.session_state["_cancel_just_done"] = True
+                        st.session_state["_busy"] = False
+                        st.session_state.pop("_busy_run_id", None)
+                        st.rerun()
 
             try:
                 # ─── Step 1: 章節定位 + 單元抽取 ───
-                status.info("Step 1/3: 解析 PDF 章節與處理單元...")
-                progress.progress(10, text=f"[{_eta(10)}] 解析 PDF 文字內容...")
+                _render_overlay(10, "Step 1/3 · 解析 PDF 章節與處理單元", _eta(10))
                 sections_local = locate_sections(tmp_path, verbose=False)
-                progress.progress(30, text=f"[{_eta(30)}] 抽取處理單元結構化資料...")
+                _render_overlay(30, "Step 1/3 · 抽取處理單元結構化資料", _eta(30))
+                if st.session_state.get("_cancel_requested"):
+                    raise RuntimeError("使用者已要求停止")
                 app_data_local = extract_application(tmp_path, verbose=False)
-                progress.progress(40, text=f"[{_eta(40)}] 完成 Step 1: 共 {app_data_local['total_units']} 個處理單元")
+                _render_overlay(40, f"Step 1/3 · 完成 (共 {app_data_local['total_units']} 個處理單元)", _eta(40))
 
                 # 存到 session
                 ocr_target_pages = sorted(set(
@@ -552,50 +651,50 @@ with tab1:
                 st.session_state["_flow_graph"] = build_flow_graph(app_data_local)
 
                 # ─── Step 2: OCR (若有流向圖頁) ───
+                if st.session_state.get("_cancel_requested"):
+                    raise RuntimeError("使用者已要求停止")
                 if ocr_target_pages:
                     n_ocr_pages = len(ocr_target_pages)
-                    status.info(f"Step 2/3: OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖")
-                    progress.progress(50, text=f"[{_eta(50)}] 執行 OCR ({n_ocr_pages} 頁)...")
+                    _render_overlay(50, f"Step 2/3 · OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖", _eta(50))
                     ocr_result = ocr_diagram_pages(tmp_path, ocr_target_pages, verbose=False)
                     st.session_state["_ocr_result"] = ocr_result
                     if "error" not in ocr_result:
                         summary = ocr_result["summary"]
-                        progress.progress(75, text=f"[{_eta(75)}] 完成 Step 2: 識別 {summary['total_units']} 單元/{summary['total_flows']} 流量/{summary['total_doses']} 加藥")
+                        _render_overlay(75, f"Step 2/3 · 完成 (識別 {summary['total_units']} 單元 / {summary['total_flows']} 流量)", _eta(75))
                     else:
-                        progress.progress(75, text=f"[{_eta(75)}] 完成 Step 2: OCR 略過")
+                        _render_overlay(75, "Step 2/3 · OCR 略過", _eta(75))
                 else:
                     st.session_state.pop("_ocr_result", None)
-                    progress.progress(75, text=f"[{_eta(75)}] Step 2/3: 無流向圖頁面,跳過 OCR")
+                    _render_overlay(75, "Step 2/3 · 無流向圖頁面, 跳過 OCR", _eta(75))
 
                 # ─── Step 3: 智能審查 (3 層: 質量平衡 + 學理 + 規則庫驅動) ───
-                status.info("Step 3/3: 執行智能審查 (3 層檢查)...")
-                progress.progress(82, text=f"[{_eta(82)}] Step 3.1: 質量平衡檢查...")
+                if st.session_state.get("_cancel_requested"):
+                    raise RuntimeError("使用者已要求停止")
+                _render_overlay(82, "Step 3/3 · 質量平衡檢查", _eta(82))
                 findings_basic = run_balance_checks(app_data_local)
-                progress.progress(88, text=f"[{_eta(88)}] Step 3.2: 學理檢查 (環工設計準則)...")
+                _render_overlay(88, "Step 3/3 · 學理檢查 (環工設計準則)", _eta(88))
                 bt = None if business_type == "(不檢查)" else business_type
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
-                progress.progress(94, text=f"[{_eta(94)}] Step 3.3: 規則庫驅動檢查 (299 筆環工技師缺失)...")
+                _render_overlay(94, "Step 3/3 · 規則庫驅動檢查 (299 筆環工技師缺失)", _eta(94))
                 findings_rule = run_rule_driven_check(app_data_local)
                 # 合併三層, 規則庫驅動的放最後 (一般是「待人工」性質)
                 st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
 
                 # 完成
                 total_elapsed = _time.time() - t_start
-                progress.progress(100, text=f"全部完成! 共耗時 {total_elapsed:.0f} 秒")
+                _render_overlay(100, f"✅ 全部完成! 共耗時 {total_elapsed:.0f} 秒", "0 秒")
                 stats = {"不合理": 0, "待人工": 0}
                 for f in st.session_state["_check_findings"]:
                     sev = f.get("嚴重度")
                     if sev in stats:
                         stats[sev] += 1
-                status.success(
-                    f"✅ **基本審查已完成**! 共 {app_data_local['total_units']} 單元 · "
-                    f"找出 {stats['不合理']} 項不合理 / {stats['待人工']} 項待人工複核 · 耗時 {total_elapsed:.0f} 秒"
-                )
-                # 提示下一步
-                st.info(
-                    "💡 **下一步**: 你可以繼續往下捲動,展開「📊 水量平衡示意圖解析」 "
-                    "讓 Gemini Vision 讀流向圖, 得到跨單元的完整流向結構 + 質量平衡檢核"
-                )
+                # 完成後標記要顯示成功訊息 (在 finally 清完 overlay 後顯示)
+                st.session_state["_review_just_done"] = {
+                    "units": app_data_local["total_units"],
+                    "unreasonable": stats["不合理"],
+                    "manual": stats["待人工"],
+                    "elapsed": int(total_elapsed),
+                }
 
                 # 記錄到 session 歷史 (重整就消失, 但本次 session 可看)
                 from datetime import datetime as _dt
@@ -627,14 +726,29 @@ with tab1:
                         )
                 except Exception as _e:
                     st.session_state["_last_sheet_log_status"] = f"⚠️ Sheet 紀錄失敗: {_e}"
+            except RuntimeError as _re:
+                # 使用者按了停止鈕 (在 step 之間檢查到 _cancel_requested)
+                if "停止" in str(_re):
+                    st.session_state["_cancel_just_done"] = True
+                else:
+                    raise
             finally:
                 try:
                     os.unlink(tmp_path)
                 except:
                     pass
+                # 清掉 overlay 跟停止鈕
+                try:
+                    overlay_slot.empty()
+                    cancel_slot.empty()
+                except Exception:
+                    pass
                 # 解鎖 UI
                 st.session_state["_busy"] = False
                 st.session_state.pop("_busy_run_id", None)
+                st.session_state.pop("_cancel_requested", None)
+                # 重新 rerun, 讓主畫面正常顯示結果
+                st.rerun()
 
     # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
     # ── 水量平衡示意圖解析 (Gemini Vision 抽結構化流向) ──
