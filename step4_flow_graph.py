@@ -154,6 +154,43 @@ def build_flow_graph(app_data):
                 matched_wtb.add(wtb)
                 break  # 一個 WTA 只配對一個 WTB
 
+    # 3.5) 沒被配對的 WTB → 來自外部 (WM 原廢水)
+    # 例如 WTB01-01-6 沒對應的 WTA, 通常是從 WMxx 直接進來的
+    for wtb in wtb_codes:
+        if wtb in matched_wtb:
+            continue
+        wtb_info = streams_index[wtb]
+        # 嘗試從 WM sources 中找指紋一致的 (若 WM 有水質)
+        wtb_fp = wtb_info.get("fingerprint")
+        matched_wm = None
+        if wtb_fp and wm_sources:
+            for wm in wm_sources:
+                wm_info = streams_index.get(wm, {})
+                if wm_info.get("fingerprint") == wtb_fp:
+                    matched_wm = wm
+                    break
+        if matched_wm:
+            edges.append({
+                "from_unit": matched_wm,   # 例: WM08
+                "from_stream": matched_wm,
+                "to_unit": wtb_info["owner_unit"],
+                "to_stream": wtb,
+                "confidence": "高",
+                "method": "水質指紋一致 (來自原廢水)",
+            })
+            matched_wtb.add(wtb)
+        else:
+            # 標成「外部進入」, 不知道確切來源 (可能是製程, 也可能 Gemini 才能讀)
+            edges.append({
+                "from_unit": "(外部進入)",
+                "from_stream": "WM?",
+                "to_unit": wtb_info["owner_unit"],
+                "to_stream": wtb,
+                "confidence": "低",
+                "method": "未配對 WTA, 推測為外部進入",
+            })
+            matched_wtb.add(wtb)
+
     # 4) 整理節點
     nodes = []
     for code, unit in sorted(units.items()):
