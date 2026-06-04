@@ -373,6 +373,12 @@ with st.sidebar:
             for mod, err in _import_errors:
                 st.caption(f"**{mod}**: {err[:150]}")
 
+# ───────── 全頁面 busy 橫幅 (置頂,不論在哪個 tab 都會看到) ─────────
+if st.session_state.get("_busy", False):
+    st.error(
+        "⏳ **系統忙碌中,請勿關閉/重整頁面,避免操作其他按鈕** — 可能會中斷處理"
+    )
+
 tab1, tab2, tab_sync, tab_import, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "🔄 規則庫管理", "📥 匯入新規則", "📖 使用說明"])
 
 with tab1:
@@ -420,8 +426,17 @@ with tab1:
             help="選了之後智能審查會檢查該事業類別應申報的項目是否漏項",
         )
 
+        # 🔒 若正在跑審查, button 禁用
+        _is_busy = st.session_state.get("_busy", False)
+        if _is_busy:
+            st.warning(
+                "⏳ **審查進行中,請勿關閉頁面或操作其他功能** — 此操作通常需要 30秒~2分鐘"
+            )
         if st.button("🚀 開始完整審查", type="primary",
+                     disabled=_is_busy,
                      help="一次跑完: 抽取單元 → 章節定位 → OCR 流向圖 → 智能審查"):
+            # 標記正在跑審查 (鎖其他主要按鈕)
+            st.session_state["_busy"] = True
             # 暫存 PDF 到 disk 供多步驟使用
             pdf_bytes = uploaded.read()
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
@@ -541,8 +556,13 @@ with tab1:
                     if sev in stats:
                         stats[sev] += 1
                 status.success(
-                    f"✅ 審查完成! 共 {app_data_local['total_units']} 單元 · "
+                    f"✅ **基本審查已完成**! 共 {app_data_local['total_units']} 單元 · "
                     f"找出 {stats['不合理']} 項不合理 / {stats['待人工']} 項待人工複核 · 耗時 {total_elapsed:.0f} 秒"
+                )
+                # 提示下一步
+                st.info(
+                    "💡 **下一步**: 你可以繼續往下捲動,展開「📊 水量平衡示意圖解析」 "
+                    "讓 Gemini Vision 讀流向圖, 得到跨單元的完整流向結構 + 質量平衡檢核"
                 )
 
                 # 記錄到 session 歷史 (重整就消失, 但本次 session 可看)
@@ -580,6 +600,8 @@ with tab1:
                     os.unlink(tmp_path)
                 except:
                     pass
+                # 解鎖 UI
+                st.session_state["_busy"] = False
 
     # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
     # ── 水量平衡示意圖解析 (Gemini Vision 抽結構化流向) ──
@@ -624,7 +646,9 @@ with tab1:
                             st.session_state["_flow_extract_result"] = None
 
                         if st.button("🤖 開始解析", type="primary", key="_btn_flow_extract",
-                                     width="stretch"):
+                                     width="stretch",
+                                     disabled=st.session_state.get("_busy", False)):
+                            st.session_state["_busy"] = True
                             progress_bar = st.progress(0)
                             status_text = st.empty()
                             def _cb(cur, tot, msg):
@@ -640,6 +664,8 @@ with tab1:
                             progress_bar.empty()
                             status_text.empty()
                             st.session_state["_flow_extract_result"] = fr
+                            # 解鎖
+                            st.session_state["_busy"] = False
 
                         fr = st.session_state.get("_flow_extract_result")
                         if fr:
@@ -648,7 +674,8 @@ with tab1:
                             else:
                                 usage = fr.get("gemini_usage", {})
                                 st.success(
-                                    f"✅ 處理 {fr['pages_processed']} 頁 / "
+                                    f"✅ **水量平衡示意圖解析完成** · "
+                                    f"處理 {fr['pages_processed']} 頁 / "
                                     f"抽出 **{len(fr['all_units'])}** 單元 / "
                                     f"**{len(fr['all_flows'])}** 流向 / "
                                     f"**{len(fr['all_external_inputs'])}** 外部輸入 / "
@@ -1510,9 +1537,12 @@ with tab_sync:
             st.markdown("#### ⬆️ 上傳")
             st.caption("xlsx → Sheet (清空後整批寫入,自動加狀態下拉選單)")
             if st.button("上傳 xlsx → Sheet", type="primary",
-                         disabled=not status["ok"], width="stretch", key="upload_btn"):
+                         disabled=not status["ok"] or st.session_state.get("_busy", False),
+                         width="stretch", key="upload_btn"):
+                st.session_state["_busy"] = True
                 with st.spinner("上傳中… (29 個分頁)"):
                     r = sheets_sync.upload_xlsx_to_sheets()
+                st.session_state["_busy"] = False
                 if r.get("ok"):
                     st.success(
                         f"✅ 上傳成功: {len(r['sheets_written'])} 個分頁 / "
@@ -1528,10 +1558,13 @@ with tab_sync:
         with col_b:
             st.markdown("#### 🔍 預覽差異")
             st.caption("比對 Sheet vs xlsx 哪些規則有差異 (依槽體+缺失ID)")
-            if st.button("預覽差異", disabled=not status["ok"],
+            if st.button("預覽差異",
+                         disabled=not status["ok"] or st.session_state.get("_busy", False),
                          width="stretch", key="preview_btn"):
+                st.session_state["_busy"] = True
                 with st.spinner("比對中…"):
                     r = sheets_sync.preview_diff()
+                st.session_state["_busy"] = False
                 if r.get("ok"):
                     st.success(
                         f"Sheet {r['sheet_total']} 筆 vs xlsx {r['xlsx_total']} 筆 / "
@@ -1560,10 +1593,12 @@ with tab_sync:
             st.caption("Sheet → xlsx (自動備份舊版 + 自動產 csv)")
             confirm_dl = st.checkbox("我確定要覆寫 xlsx", key="confirm_download")
             if st.button("下載 Sheet → xlsx", type="secondary",
-                         disabled=not (status["ok"] and confirm_dl),
+                         disabled=not (status["ok"] and confirm_dl) or st.session_state.get("_busy", False),
                          width="stretch", key="download_btn"):
+                st.session_state["_busy"] = True
                 with st.spinner("下載 + 備份中…"):
                     r = sheets_sync.download_sheets_to_xlsx()
+                st.session_state["_busy"] = False
                 if r.get("ok"):
                     st.success(
                         f"✅ 下載成功: {r['sheets_read']} 個分頁 / "
@@ -1747,7 +1782,7 @@ with tab_import:
                         re_extract = st.button(
                             "🔄 重抽" if last_key == pdf_key else "🤖 開始抽取",
                             type="primary",
-                            disabled=not g_status["ok"],
+                            disabled=not g_status["ok"] or st.session_state.get("_busy", False),
                             width="stretch",
                             key="imp_gemini_btn",
                         )
@@ -1760,12 +1795,14 @@ with tab_import:
                             st.caption(f"準備抽: {uploaded_pdf.name} ({uploaded_pdf.size/1024:.0f} KB)")
 
                     if re_extract:
+                        st.session_state["_busy"] = True
                         with st.spinner("📄 讀 PDF → 🤖 呼叫 Gemini → 解析… (10-30 秒)"):
                             ex_result = gemini_extractor.extract_rules_from_pdf(
                                 uploaded_pdf.getvalue(), uploaded_pdf.name
                             )
                         st.session_state["gemini_extract_result"] = ex_result
                         st.session_state["gemini_pdf_key"] = pdf_key
+                        st.session_state["_busy"] = False
 
                     ex_result = st.session_state.get("gemini_extract_result")
                     if ex_result and st.session_state.get("gemini_pdf_key") == pdf_key:
@@ -2157,8 +2194,9 @@ with tab_import:
                     )
 
                     if st.button("📥 執行匯入", type="primary",
-                                 disabled=not confirm_import,
+                                 disabled=not confirm_import or st.session_state.get("_busy", False),
                                  width="stretch"):
+                        st.session_state["_busy"] = True
                         metadata = {
                             "檔名": src_filename,
                             "技師姓名": src_technician,
@@ -2169,6 +2207,7 @@ with tab_import:
                         }
                         with st.spinner("寫入中…"):
                             result = rule_importer.commit_import(rows, metadata, skip_missing=True)
+                        st.session_state["_busy"] = False
 
                         if result.get("ok"):
                             st.success(
