@@ -666,8 +666,8 @@ with tab1:
 
                                 tabs = st.tabs([
                                     "🌊 流向總表", "📦 單元清單",
-                                    "⚖️ 質平檢核", "🔄 跟系統比對",
-                                    "📄 各頁原始 JSON",
+                                    "⚖️ 質平檢核", "🔗 編號一致性",
+                                    "🔄 跟系統比對", "📄 各頁原始 JSON",
                                 ])
 
                                 with tabs[0]:
@@ -727,6 +727,72 @@ with tab1:
                                         )
 
                                 with tabs[3]:
+                                    # 編號一致性檢核
+                                    consistency = _fde.check_stream_consistency(fr)
+                                    s = consistency["summary"]
+                                    sc1, sc2, sc3, sc4 = st.columns(4)
+                                    sc1.metric("總編號數", s["total_streams"])
+                                    sc2.metric("⚠️ 警告", s["warnings_count"])
+                                    sc3.metric("🔍 上游有編號\n但下游漏抽", s["unmatched_from_count"])
+                                    sc4.metric("🔍 下游有編號\n但上游漏抽", s["unmatched_to_count"])
+
+                                    if consistency["warnings"]:
+                                        st.markdown("**⚠️ 一致性警告**")
+                                        warn_rows = []
+                                        for w in consistency["warnings"]:
+                                            warn_rows.append({
+                                                "類型": w["type"],
+                                                "編號": w.get("stream", ""),
+                                                "訊息": w["message"],
+                                            })
+                                        import pandas as _pd
+                                        st.dataframe(
+                                            _pd.DataFrame(warn_rows).astype(str),
+                                            use_container_width=True, hide_index=True
+                                        )
+                                    else:
+                                        st.success("✅ 沒有編號一致性問題")
+
+                                    if consistency["unmatched_from"]:
+                                        with st.expander(
+                                            f"🔍 上游 WTA 編號 {len(consistency['unmatched_from'])} 條, 下游沒抽到對應 WTB"
+                                        ):
+                                            import pandas as _pd
+                                            st.dataframe(
+                                                _pd.DataFrame(consistency["unmatched_from"]).astype(str),
+                                                use_container_width=True, hide_index=True
+                                            )
+                                            st.caption("可能原因: 圖中沒標下游 WTB 編號 / Gemini 漏抽 / 該箭頭實際進入外部")
+
+                                    if consistency["unmatched_to"]:
+                                        with st.expander(
+                                            f"🔍 下游 WTB 編號 {len(consistency['unmatched_to'])} 條, 上游沒抽到對應 WTA"
+                                        ):
+                                            import pandas as _pd
+                                            st.dataframe(
+                                                _pd.DataFrame(consistency["unmatched_to"]).astype(str),
+                                                use_container_width=True, hide_index=True
+                                            )
+                                            st.caption("可能原因: 來自外部原廢水 (WM) / Gemini 漏抽上游編號")
+
+                                    with st.expander("📋 全部編號詳細位置 (debug)"):
+                                        cg = consistency["code_groups"]
+                                        cg_rows = []
+                                        for code, info in cg.items():
+                                            cg_rows.append({
+                                                "編號": code,
+                                                "as_from 次數": len(info["as_from"]),
+                                                "as_to 次數": len(info["as_to"]),
+                                                "Q 值集合": str(info["Q_set"]),
+                                            })
+                                        if cg_rows:
+                                            import pandas as _pd
+                                            st.dataframe(
+                                                _pd.DataFrame(cg_rows).astype(str),
+                                                use_container_width=True, hide_index=True
+                                            )
+
+                                with tabs[4]:
                                     # 跟現有 app_data 比對
                                     app_data_cmp = st.session_state.get("_app_data") or {}
                                     if not app_data_cmp:
@@ -782,7 +848,7 @@ with tab1:
                                                 use_container_width=True, hide_index=True
                                             )
 
-                                with tabs[4]:
+                                with tabs[5]:
                                     for pr in fr.get("per_page_results", []):
                                         st.markdown(f"**p{pr['page']} - {pr.get('system_title', '')}**")
                                         st.json(pr["data"])

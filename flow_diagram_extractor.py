@@ -480,6 +480,192 @@ def check_water_balance(extract_result):
 
 
 # ──────────────────────────────────────────────────
+# 跨單元 stream 對應一致性檢核
+# ──────────────────────────────────────────────────
+
+# 解析 stream code 的 regex
+_STREAM_RE = re.compile(r"^WT([AB])(\d{2})-(\d{2})-?(\d*)$")
+
+
+def _parse_stream_code(code):
+    """把 WTA01-01-1 拆成 (kind='A', unit='T01-01', idx='1')。失敗回 None。"""
+    if not code:
+        return None
+    m = _STREAM_RE.match(str(code).strip())
+    if not m:
+        return None
+    kind = m.group(1)
+    unit = f"T{m.group(2)}-{m.group(3)}"
+    idx = m.group(4) or ""
+    return {"kind": kind, "unit": unit, "idx": idx, "full": code.strip()}
+
+
+def check_stream_consistency(extract_result):
+    """跨單元 stream 對應一致性檢核。
+
+    每條 flow 應該有 from_stream (WTAxx-yy-z) 跟 to_stream (WTBxx-yy-z),
+    且 from_stream 跟 to_stream 是「同一條水流」, 它們在文件其他地方應該對得起來。
+
+    檢核項目:
+    1. 流量一致: 若多條 flow 的 from_stream / to_stream 相同, 它們的 Q 應一致
+    2. 對應存在: 若 WTAxx-yy-z 出現在某條 flow 的 from_stream, 通常它在另一條 flow 的 to_stream 也應該對應到一個 WTBaa-bb-c
+    3. 編號歸屬: WTAxx-yy-z 的歸屬單元應該 = 該 flow 的 from_unit (例 WTA01-01-1 屬於 T01-01)
+
+    Returns:
+        {
+            "ok": True,
+            "code_groups": {                  # 每個 stream code 出現的位置
+                "WTA01-01-1": {
+                    "as_from": [{flow_idx, Q_cmd}],  # 出現在某些 flow 的 from_stream
+                    "as_to":   [{flow_idx, Q_cmd}],  # 出現在某些 flow 的 to_stream
+                    "Q_set": [608.56, ...],          # 涉及的 Q 值集合 (應該都一樣)
+                }
+            },
+            "warnings": [
+                {"type": "...", "message": "...", "stream": "..."}
+            ],
+            "summary": {
+                "total_streams": N,
+                "warnings_count": M,
+            }
+        }
+    """
+    flows = extract_result.get("all_flows", [])
+    code_groups = {}  # code -> {"as_from": [...], "as_to": [...], "Q_set": [...]}
+    warnings = []
+
+    def _add(code, role, flow_idx, q, other_unit):
+        if not code:
+            return
+        if code not in code_groups:
+            code_groups[code] = {"as_from": [], "as_to": [], "Q_set": []}
+        code_groups[code][role].append({
+            "flow_idx": flow_idx, "Q_cmd": q, "other_unit": other_unit
+        })
+        if q is not None:
+            try:
+                code_groups[code]["Q_set"].append(float(q))
+            except (TypeError, ValueError):
+                pass
+
+    for i, f in enumerate(flows):
+        q = f.get("Q_cmd")
+        _add(f.get("from_stream"), "as_from", i, q, f.get("to_unit"))
+        _add(f.get("to_stream"), "as_to", i, q, f.get("from_unit"))
+
+    # 檢核 1: 同一 stream code 在多處出現時, Q 應一致
+    for code, info in code_groups.items():
+        q_vals = info["Q_set"]
+        if len(q_vals) >= 2:
+            # 看差異 (相對)
+            mn, mx = min(q_vals), max(q_vals)
+            if mn > 0:
+                diff_pct = (mx - mn) / mn * 100
+                if diff_pct > 1:  # > 1% 偏差
+                    warnings.append({
+                        "type": "stream_q_inconsistent",
+                        "stream": code,
+                        "message": f"流量不一致: {q_vals} (差 {diff_pct:.1f}%)",
+                    })
+
+    # 檢核 2: stream code 歸屬 vs flow 的 from/to_unit 是否一致
+    for code, info in code_groups.items():
+        parsed = _parse_stream_code(code)
+        if not parsed:
+            warnings.append({
+                "type": "stream_code_invalid",
+                "stream": code,
+                "message": f"編號格式不認得 (應為 WTA/WTBxx-yy-z)",
+            })
+            continue
+        expected_unit = parsed["unit"]
+        kind = parsed["kind"]
+
+        # WTAxx-yy-z 應該出現在某條 flow 的 from_stream (作為 from_unit=Txx-yy 的出流)
+        # WTBxx-yy-z 應該出現在某條 flow 的 to_stream (作為 to_unit=Txx-yy 的進流)
+        for ev in info["as_from"]:
+            # 該 flow 的 from_unit 應該 = expected_unit
+            flow = flows[ev["flow_idx"]]
+            from_u = flow.get("from_unit")
+            if from_u and from_u != expected_unit:
+                warnings.append({
+                    "type": "stream_unit_mismatch",
+                    "stream": code,
+                    "message": f"{code} 標為 from_stream, 但該 flow 的 from_unit={from_u} (應為 {expected_unit})",
+                })
+            if kind != "A":
+                warnings.append({
+                    "type": "stream_kind_mismatch",
+                    "stream": code,
+                    "message": f"{code} 用為 from_stream (出流), 但編號是 WTB 開頭 (應為 WTA)",
+                })
+
+        for ev in info["as_to"]:
+            flow = flows[ev["flow_idx"]]
+            to_u = flow.get("to_unit")
+            if to_u and to_u != expected_unit:
+                warnings.append({
+                    "type": "stream_unit_mismatch",
+                    "stream": code,
+                    "message": f"{code} 標為 to_stream, 但該 flow 的 to_unit={to_u} (應為 {expected_unit})",
+                })
+            if kind != "B":
+                warnings.append({
+                    "type": "stream_kind_mismatch",
+                    "stream": code,
+                    "message": f"{code} 用為 to_stream (進流), 但編號是 WTA 開頭 (應為 WTB)",
+                })
+
+    # 檢核 3: 出現在 from_stream 的 WTA, 應該在另一條 flow 的 to_stream 對應到 WTB
+    # (即跨單元連續性)
+    unmatched_from = []
+    unmatched_to = []
+    for code, info in code_groups.items():
+        parsed = _parse_stream_code(code)
+        if not parsed:
+            continue
+        # WTA + 只出現在 as_from + 沒對應到 WTB → 可能漏抽下游的 to_stream
+        if parsed["kind"] == "A" and info["as_from"] and not info["as_to"]:
+            # 看這條 flow 的 to_stream 有沒有對應到任何 WTB
+            for ev in info["as_from"]:
+                flow = flows[ev["flow_idx"]]
+                to_stream = flow.get("to_stream")
+                if not to_stream:
+                    unmatched_from.append({
+                        "stream": code,
+                        "from_unit": parsed["unit"],
+                        "to_unit": flow.get("to_unit"),
+                        "Q_cmd": ev["Q_cmd"],
+                    })
+        # WTB + 只出現在 as_to + 該 flow 沒 from_stream → 可能漏抽上游編號
+        if parsed["kind"] == "B" and info["as_to"] and not info["as_from"]:
+            for ev in info["as_to"]:
+                flow = flows[ev["flow_idx"]]
+                from_stream = flow.get("from_stream")
+                if not from_stream:
+                    unmatched_to.append({
+                        "stream": code,
+                        "to_unit": parsed["unit"],
+                        "from_unit": flow.get("from_unit"),
+                        "Q_cmd": ev["Q_cmd"],
+                    })
+
+    return {
+        "ok": True,
+        "code_groups": code_groups,
+        "warnings": warnings,
+        "unmatched_from": unmatched_from,  # 上游有 WTA 編號但下游 to_stream 漏抽
+        "unmatched_to": unmatched_to,      # 下游有 WTB 編號但上游 from_stream 漏抽
+        "summary": {
+            "total_streams": len(code_groups),
+            "warnings_count": len(warnings),
+            "unmatched_from_count": len(unmatched_from),
+            "unmatched_to_count": len(unmatched_to),
+        }
+    }
+
+
+# ──────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────
 
