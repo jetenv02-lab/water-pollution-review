@@ -35,12 +35,26 @@ EXTRACTION_PROMPT = """這是台灣水污染防治措施申請文件的「水量
 - 方框: 處理單元, 例 "T03-05 第一氧化池"
 - 箭頭: 表示水流方向 (從一個方框流到另一個方框)
 - 編號標籤 (在箭頭旁邊):
-  - WTA01-01-1 = 出流 (After)
-  - WTB01-01-1 = 進流 (Before)
-  - WMxx = 原廢水 (Wastewater 直接從製程進入廠區)
-  - Dxx = 放流口 (Discharge)
+  - WTAxx-yy-z = 第 xx-yy 號處理單元的「第 z 條出流」(After / 出)
+  - WTBxx-yy-z = 第 xx-yy 號處理單元的「第 z 條進流」(Before / 進)
+  - WMxx = 原廢水 (Wastewater 直接從製程進入廠區, 是進流的特殊外部來源)
+  - Dxx = 放流口 (Discharge, 是出流的最終目的地)
 - 流量: Q = XX CMD (Cubic Meters per Day)
 - 質量數據 (可能標在箭頭旁): kg/day 等
+
+【最重要 — 同一條箭頭兩端的編號是「同一條水」, 只是命名規則不同】
+例: T01-01 → T01-02 之間的箭頭, 在上游叫 WTA01-01-1 (T01-01 的出流),
+   在下游叫 WTB01-02-1 (T01-02 的進流), 兩個是同一條水。
+所以:
+- 一條箭頭的 from_stream = "WTA01-01-1"
+- 一條箭頭的 to_stream   = "WTB01-02-1"
+- 兩者是同一條水流, 只是視角不同 (對上游=出,對下游=進)
+- 流量、水質都應該完全一致
+
+【質量平衡關係】
+- 同單元: Σ 所有進流 Q = Σ 所有出流 Q (除非有蒸發/補水)
+- T01-01 中和池可能有 6 條進流 (WTB01-01-1 ~ -6) 合流, 但只有 1 條出流 (WTA01-01-1)
+  此時: Σ(WTB01-01-1..6) Q = WTA01-01-1 Q
 
 【輸出格式 — JSON】
 {
@@ -342,6 +356,12 @@ def extract_all_balance_diagrams(pdf_bytes, max_pages=None, progress_callback=No
 
 def check_water_balance(extract_result):
     """從抽出的流向資料, 算每個單元的水量平衡 (Σ進 ≈ Σ出)。
+
+    質量平衡邏輯:
+        對每個處理單元 X:
+            Σ 所有進流 (WTBxx-yy-*) 的 Q  ≈  Σ 所有出流 (WTAxx-yy-*) 的 Q
+        外部進入 (WMxx) 算 in
+        放流口 (Dxx) 算 out
 
     Returns:
         {
