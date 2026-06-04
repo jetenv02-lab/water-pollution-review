@@ -334,7 +334,11 @@ with st.sidebar:
     history = st.session_state.get("_review_history", [])
     if history:
         st.markdown("**📋 本次審查歷史**")
-        st.caption("(本次瀏覽 session, 重新整理會清空)")
+        st.caption("(本次瀏覽 session · 永久紀錄請看「📊 規則庫瀏覽」)")
+        # 最近一次的 Sheet 寫入狀態
+        log_status = st.session_state.get("_last_sheet_log_status")
+        if log_status:
+            st.caption(log_status)
         for i, h in enumerate(history[:5]):
             with st.container(border=True):
                 fname_short = h["filename"]
@@ -505,16 +509,32 @@ with tab1:
                 from datetime import datetime as _dt
                 if "_review_history" not in st.session_state:
                     st.session_state["_review_history"] = []
-                st.session_state["_review_history"].insert(0, {
+                review_record = {
                     "time": _dt.now().strftime("%H:%M:%S"),
                     "filename": uploaded.name,
                     "units": app_data_local["total_units"],
                     "unreasonable": stats["不合理"],
                     "manual": stats["待人工"],
                     "elapsed_sec": int(total_elapsed),
-                })
+                }
+                st.session_state["_review_history"].insert(0, review_record)
                 # 限制歷史只保留最近 10 筆
                 st.session_state["_review_history"] = st.session_state["_review_history"][:10]
+
+                # 同時把這筆寫到 Sheet 的 _審查紀錄 分頁 (跨 session 持久化)
+                try:
+                    import review_history
+                    sheet_result = review_history.append_review_record(review_record)
+                    if sheet_result.get("ok"):
+                        st.session_state["_last_sheet_log_status"] = (
+                            f"✅ 紀錄已存到 Sheet (第 {sheet_result['review_times']} 次審查此文件)"
+                        )
+                    else:
+                        st.session_state["_last_sheet_log_status"] = (
+                            f"⚠️ Sheet 紀錄失敗: {sheet_result.get('error', '?')[:80]}"
+                        )
+                except Exception as _e:
+                    st.session_state["_last_sheet_log_status"] = f"⚠️ Sheet 紀錄失敗: {_e}"
             finally:
                 try:
                     os.unlink(tmp_path)
@@ -933,6 +953,45 @@ with tab2:
             } for r in display_rules[:500]],
             use_container_width=True, hide_index=True,
         )
+
+    # ── 跨 session 永久審查紀錄 (從 Sheet 讀) ──
+    st.divider()
+    st.subheader("📋 歷次審查紀錄 (跨 session 永久)")
+    st.caption("從 Google Sheet 的 `_審查紀錄` 分頁讀取。每次「開始完整審查」完成會自動 append 一列。")
+
+    col_h1, col_h2 = st.columns([1, 4])
+    with col_h1:
+        refresh_history = st.button("🔄 重新載入", key="_refresh_history_btn")
+    if refresh_history or "_review_history_sheet" not in st.session_state:
+        try:
+            import review_history as _rh
+            with st.spinner("從 Sheet 載入歷史…"):
+                result = _rh.load_review_history(limit=200)
+            st.session_state["_review_history_sheet"] = result
+        except Exception as e:
+            st.session_state["_review_history_sheet"] = {"ok": False, "error": str(e)}
+
+    sheet_history = st.session_state.get("_review_history_sheet", {})
+    if sheet_history.get("ok"):
+        rows = sheet_history.get("rows", [])
+        if rows:
+            with col_h2:
+                st.caption(f"共 {len(rows)} 筆 (最新在最上面)")
+            try:
+                import pandas as _pd
+                df_h = _pd.DataFrame(rows)
+                # 把所有欄位轉成字串 (避免 PyArrow 錯誤)
+                df_h = df_h.astype(str)
+                st.dataframe(df_h, use_container_width=True, hide_index=True)
+            except Exception as _e:
+                st.error(f"無法顯示表格: {_e}")
+                st.json(rows[:10])
+        else:
+            st.info("尚無歷史紀錄。執行一次「🚀 開始審查」後會自動寫進來。")
+    else:
+        err = sheet_history.get("error", "未知錯誤")
+        st.warning(f"無法載入: {err[:200]}")
+        st.caption("可能原因: 未設定 Service Account / Sheet 沒分享 / 網路問題")
 
 # ─────────────────────────────────────────────
 # 規則庫管理 (Google Sheets 同步) — v2: xlsx 為主, csv 自動衍生
