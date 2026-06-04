@@ -37,19 +37,39 @@ EXTRACTION_PROMPT = """這是台灣水污染防治措施申請文件的「水量
 - 編號標籤 (在箭頭旁邊):
   - WTAxx-yy-z = 第 xx-yy 號處理單元的「第 z 條出流」(After / 出)
   - WTBxx-yy-z = 第 xx-yy 號處理單元的「第 z 條進流」(Before / 進)
-  - WMxx = 原廢水 (Wastewater 直接從製程進入廠區, 是進流的特殊外部來源)
-  - Dxx = 放流口 (Discharge, 是出流的最終目的地)
+  - WMxx = 原廢水 (Wastewater 直接從製程進入廠區, 是某條進流的「外部上游」)
+  - Dxx = 放流口 (Discharge, 是某條出流的「外部下游」)
 - 流量: Q = XX CMD (Cubic Meters per Day)
 - 質量數據 (可能標在箭頭旁): kg/day 等
 
 【最重要 — 同一條箭頭兩端的編號是「同一條水」, 只是命名規則不同】
+
+情況 A — 兩端都是處理單元:
 例: T01-01 → T01-02 之間的箭頭, 在上游叫 WTA01-01-1 (T01-01 的出流),
    在下游叫 WTB01-02-1 (T01-02 的進流), 兩個是同一條水。
-所以:
-- 一條箭頭的 from_stream = "WTA01-01-1"
-- 一條箭頭的 to_stream   = "WTB01-02-1"
-- 兩者是同一條水流, 只是視角不同 (對上游=出,對下游=進)
-- 流量、水質都應該完全一致
+所以一條 flow 應寫:
+  from_unit="T01-01", from_stream="WTA01-01-1"
+  to_unit="T01-02",   to_stream="WTB01-02-1"
+
+情況 B — 來源是 WMxx 原廢水:
+例: WM08 化撿廢水 → T01-01 的箭頭, 在上游叫 WM08, 在下游叫 WTB01-01-6,
+   兩個編號也是同一條水, 只是上游沒有處理單元。
+所以這條 flow 應寫:
+  from_unit="WM08", from_stream="WM08"     (沒有處理單元時, from_unit 就是 WMxx)
+  to_unit="T01-01", to_stream="WTB01-01-6"
+  Q_cmd=47.5
+**這條 WMxx 應該同時也寫進 external_inputs 裡, 並標明 to_stream:**
+  external_inputs: [{"code":"WM08", "name":"化撿廢水", "Q_cmd":47.5, "to_unit":"T01-01", "to_stream":"WTB01-01-6"}]
+
+情況 C — 目的是 Dxx 放流口:
+例: T01-02 → D01 的箭頭, 在上游叫 WTA01-02-1 (T01-02 的出流), 下游就是 D01。
+所以這條 flow 應寫:
+  from_unit="T01-02", from_stream="WTA01-02-1"
+  to_unit="D01",      to_stream="D01"
+**同時也寫進 discharge_points, 並標明 from_stream:**
+  discharge_points: [{"code":"D01", "name":"放流口", "Q_cmd":608.56, "from_unit":"T01-02", "from_stream":"WTA01-02-1"}]
+
+- 流量、水質在同一條箭頭兩端應該完全一致
 
 【質量平衡關係】
 - 同單元: Σ 所有進流 Q = Σ 所有出流 Q (除非有蒸發/補水)
@@ -76,10 +96,10 @@ EXTRACTION_PROMPT = """這是台灣水污染防治措施申請文件的「水量
     }
   ],
   "external_inputs": [
-    {"code": "WM03", "name": "氰系廢液", "Q_cmd": 0.625, "to_unit": "T03-02"}
+    {"code": "WM03", "name": "氰系廢液", "Q_cmd": 0.625, "to_unit": "T03-02", "to_stream": "WTB03-02-1"}
   ],
   "discharge_points": [
-    {"code": "D01", "name": "放流口", "from_unit": "T01-02", "Q_cmd": 608.56}
+    {"code": "D01", "name": "放流口", "from_unit": "T01-02", "from_stream": "WTA01-02-1", "Q_cmd": 608.56}
   ],
   "annotations": ["其他關鍵備註, 例如 設計值 100% 呈現, 反洗水質計算等"]
 }
@@ -390,6 +410,9 @@ def check_water_balance(extract_result):
     in_by_unit = {}  # code → total Q
     out_by_unit = {}
 
+    # 記錄已從 flows 加過的「from-to-stream」三元組, 避免 external/discharge 重複算
+    seen_flow_keys = set()
+
     for f in flows:
         q = f.get("Q_cmd")
         if q is None:
@@ -404,8 +427,12 @@ def check_water_balance(extract_result):
             in_by_unit[to_u] = in_by_unit.get(to_u, 0) + q
         if from_u:
             out_by_unit[from_u] = out_by_unit.get(from_u, 0) + q
+        # 記下這條 flow 的識別 (用 from-to-streams 三元組)
+        key = (f.get("from_stream"), f.get("to_stream"), to_u)
+        if key != (None, None, None):
+            seen_flow_keys.add(key)
 
-    # 外部進入算進
+    # 外部進入算進 — 但若已在 flows 出現過, 跳過避免重複
     for e in external:
         q = e.get("Q_cmd")
         if q is None:
@@ -415,10 +442,20 @@ def check_water_balance(extract_result):
         except (TypeError, ValueError):
             continue
         to_u = e.get("to_unit")
+        # 看看是否 flows 裡已有這條 (用 from_stream=WMxx 或 to_stream 對照)
+        from_s = e.get("code") or e.get("from_stream")
+        to_s = e.get("to_stream")
+        key = (from_s, to_s, to_u)
+        if key in seen_flow_keys:
+            continue
+        # 也檢查另一種對應 (Gemini 可能把 WMxx 寫成 from_unit)
+        key2 = (None, to_s, to_u)
+        if to_s and key2 in seen_flow_keys:
+            continue
         if to_u:
             in_by_unit[to_u] = in_by_unit.get(to_u, 0) + q
 
-    # 放流口算出
+    # 放流口算出 — 同樣避免重複
     for d in discharge:
         q = d.get("Q_cmd")
         if q is None:
@@ -428,6 +465,14 @@ def check_water_balance(extract_result):
         except (TypeError, ValueError):
             continue
         from_u = d.get("from_unit")
+        from_s = d.get("from_stream")
+        to_s = d.get("code") or d.get("to_stream")
+        key = (from_s, to_s, d.get("code"))
+        if key in seen_flow_keys:
+            continue
+        key2 = (from_s, None, None)
+        if from_s and any(from_s == k[0] for k in seen_flow_keys):
+            continue
         if from_u:
             out_by_unit[from_u] = out_by_unit.get(from_u, 0) + q
 
@@ -485,19 +530,27 @@ def check_water_balance(extract_result):
 
 # 解析 stream code 的 regex
 _STREAM_RE = re.compile(r"^WT([AB])(\d{2})-(\d{2})-?(\d*)$")
+_WM_RE = re.compile(r"^WM(\d+)$")        # 原廢水 (外部上游)
+_DISCHARGE_RE = re.compile(r"^D(\d+)$")  # 放流口 (外部下游)
 
 
 def _parse_stream_code(code):
-    """把 WTA01-01-1 拆成 (kind='A', unit='T01-01', idx='1')。失敗回 None。"""
+    """把 WTA01-01-1 拆成 (kind='A', unit='T01-01', idx='1')。
+    也支援 WMxx (kind='WM') 和 Dxx (kind='D')。失敗回 None。"""
     if not code:
         return None
-    m = _STREAM_RE.match(str(code).strip())
-    if not m:
-        return None
-    kind = m.group(1)
-    unit = f"T{m.group(2)}-{m.group(3)}"
-    idx = m.group(4) or ""
-    return {"kind": kind, "unit": unit, "idx": idx, "full": code.strip()}
+    s = str(code).strip()
+    m = _STREAM_RE.match(s)
+    if m:
+        return {"kind": m.group(1), "unit": f"T{m.group(2)}-{m.group(3)}",
+                "idx": m.group(4) or "", "full": s}
+    m = _WM_RE.match(s)
+    if m:
+        return {"kind": "WM", "unit": s, "idx": m.group(1), "full": s}
+    m = _DISCHARGE_RE.match(s)
+    if m:
+        return {"kind": "D", "unit": s, "idx": m.group(1), "full": s}
+    return None
 
 
 def check_stream_consistency(extract_result):
@@ -581,19 +634,19 @@ def check_stream_consistency(extract_result):
         expected_unit = parsed["unit"]
         kind = parsed["kind"]
 
-        # WTAxx-yy-z 應該出現在某條 flow 的 from_stream (作為 from_unit=Txx-yy 的出流)
-        # WTBxx-yy-z 應該出現在某條 flow 的 to_stream (作為 to_unit=Txx-yy 的進流)
+        # WM/D 不檢查 kind, 它們可以同時當 from/to
         for ev in info["as_from"]:
-            # 該 flow 的 from_unit 應該 = expected_unit
             flow = flows[ev["flow_idx"]]
             from_u = flow.get("from_unit")
-            if from_u and from_u != expected_unit:
+            if from_u and from_u != expected_unit and kind in ("A", "WM"):
+                # WTA01-01-1 的 from_unit 應是 T01-01
+                # WM08 的 from_unit 應是 WM08 (或 None / 跟自己同名)
                 warnings.append({
                     "type": "stream_unit_mismatch",
                     "stream": code,
                     "message": f"{code} 標為 from_stream, 但該 flow 的 from_unit={from_u} (應為 {expected_unit})",
                 })
-            if kind != "A":
+            if kind == "B":
                 warnings.append({
                     "type": "stream_kind_mismatch",
                     "stream": code,
@@ -603,13 +656,13 @@ def check_stream_consistency(extract_result):
         for ev in info["as_to"]:
             flow = flows[ev["flow_idx"]]
             to_u = flow.get("to_unit")
-            if to_u and to_u != expected_unit:
+            if to_u and to_u != expected_unit and kind in ("B", "D"):
                 warnings.append({
                     "type": "stream_unit_mismatch",
                     "stream": code,
                     "message": f"{code} 標為 to_stream, 但該 flow 的 to_unit={to_u} (應為 {expected_unit})",
                 })
-            if kind != "B":
+            if kind == "A":
                 warnings.append({
                     "type": "stream_kind_mismatch",
                     "stream": code,
@@ -623,6 +676,9 @@ def check_stream_consistency(extract_result):
     for code, info in code_groups.items():
         parsed = _parse_stream_code(code)
         if not parsed:
+            continue
+        # WM 跟 D 本來就是「外部端點」, 不需要對應到另一端的 WT 編號 → 跳過
+        if parsed["kind"] in ("WM", "D"):
             continue
         # WTA + 只出現在 as_from + 沒對應到 WTB → 可能漏抽下游的 to_stream
         if parsed["kind"] == "A" and info["as_from"] and not info["as_to"]:
