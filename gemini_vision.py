@@ -16,7 +16,12 @@ import json
 import os
 import re
 
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+# 從 gemini_extractor 共用模型候選清單
+try:
+    from gemini_extractor import GEMINI_MODEL_CANDIDATES
+except Exception:
+    GEMINI_MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0]
 
 
 # ──────────────────────────────────────────────────
@@ -196,19 +201,31 @@ def process_images(images, mode="extract_rules", focus_hint=""):
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
 
         # 把 prompt 跟圖片一起送
         content = [prompt] + pil_images
 
-        response = model.generate_content(
-            content,
-            generation_config={
-                "temperature": 0.1,
-                "max_output_tokens": 16384,
-                "response_mime_type": "application/json",
-            },
-        )
+        # 依序試多個模型 (跟 gemini_extractor 同步)
+        last_err = None
+        response = None
+        for candidate in GEMINI_MODEL_CANDIDATES:
+            try:
+                model = genai.GenerativeModel(candidate)
+                response = model.generate_content(
+                    content,
+                    generation_config={
+                        "temperature": 0.1,
+                        "max_output_tokens": 16384,
+                        "response_mime_type": "application/json",
+                    },
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if response is None:
+            return {"ok": False, "stage": "gemini",
+                    "error": f"所有 Gemini 模型都失敗, 最後錯誤: {last_err}"}
 
         raw = response.text.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)

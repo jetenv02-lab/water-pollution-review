@@ -43,7 +43,14 @@ CHECK_TYPES = [
     "流向示意圖", "水質標準", "文件一致性", "去除率", "其他",
 ]
 
-GEMINI_MODEL = "gemini-2.0-flash-exp"  # Flash 便宜快
+# 模型候選清單 (依序試, 哪個能用用哪個)
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
+    "gemini-1.5-flash",
+]
+GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0]  # 預設用第一個
 
 
 # ──────────────────────────────────────────────────
@@ -228,18 +235,31 @@ def _call_gemini(pdf_text, api_key):
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-
         prompt = _build_extraction_prompt(pdf_text)
 
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.1,  # 低溫度, 求穩定
-                "max_output_tokens": 32768,
-                "response_mime_type": "application/json",
-            },
-        )
+        # 依序試多個模型, 哪個能用用哪個
+        last_err = None
+        response = None
+        used_model = None
+        for candidate in GEMINI_MODEL_CANDIDATES:
+            try:
+                model = genai.GenerativeModel(candidate)
+                response = model.generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0.1,
+                        "max_output_tokens": 32768,
+                        "response_mime_type": "application/json",
+                    },
+                )
+                used_model = candidate
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if response is None:
+            return {"ok": False,
+                    "error": f"所有 Gemini 模型都失敗, 最後錯誤: {last_err}"}
 
         raw = response.text.strip()
         # 移除可能的 ``` 包裝

@@ -724,30 +724,59 @@ with tab1:
         c4.metric("機具", total_eq)
         c5.metric("水質流向", f"進{total_in}/出{total_out}")
 
-        # 單元清單
+        # 單元清單 (精簡 + 加削減率)
         st.subheader("📋 處理單元清單")
         st.caption(
-            "📐 **設計** = 設計操作參數筆數 (pH 範圍/停留時間/有效容量等規格)　·　"
-            "📏 **量測** = 量測操作參數筆數 (運作時實際監控的 pH/加藥量/DO 等)　·　"
-            "🔧 **機具** = 相關機具設施筆數 (pH 計/攪拌機/加藥機等)　·　"
-            "📥 **進** = 進流水流股數 (WTB 編號)　·　"
-            "📤 **出** = 出流水流股數 (WTA 編號)"
+            "**進/出** = 進出流水流股數　·　"
+            "**削減率** = 質量平衡: Σ(進流質量) → Σ(出流質量), 跨各水質項目平均 "
+            "(排除 pH/水溫)。⚠️ = 有項目異常 (出 > 進 或 > 99.5%)"
         )
+
+        # 先算所有單元的削減率
+        try:
+            import unit_removal_rate as _urr
+            removal_results = _urr.compute_all_units_removal(app_data)
+        except Exception as _re:
+            st.caption(f"削減率計算失敗: {_re}")
+            removal_results = {}
+            _urr = None
+
         unit_rows = []
         for code, info in sorted(app_data["units"].items()):
+            rr = removal_results.get(code, {})
+            removal_text = (_urr.format_removal_short(rr.get("summary", {}))
+                            if _urr and removal_results else "-")
             unit_rows.append({
                 "代號": code,
                 "原始名稱": info["name_in_doc"],
                 "標準類型": info["std_tank"],
-                "代碼": info.get("code_id", ""),
                 "頁數": ", ".join(map(str, info["pages_found"][:3])),
-                "📐設計": len(info["design_params"]),
-                "📏量測": len(info["measure_params"]),
-                "🔧機具": len(info["equipment"]),
                 "📥進": len(info["influent"]),
                 "📤出": len(info["effluent"]),
+                "📉削減率": removal_text,
             })
         st.dataframe(unit_rows, use_container_width=True, hide_index=True)
+
+        # 削減率異常清單
+        if _urr and removal_results:
+            warned_units = [
+                (code, rr["summary"]) for code, rr in removal_results.items()
+                if rr.get("summary", {}).get("warnings")
+            ]
+            if warned_units:
+                with st.expander(f"⚠️ {len(warned_units)} 個單元有削減率異常項目"):
+                    for code, summ in warned_units[:30]:
+                        unit_info = app_data["units"].get(code, {})
+                        unit_name = unit_info.get("name_in_doc", "")
+                        std_name = unit_info.get("std_tank", "")
+                        st.markdown(
+                            f"**{code} {unit_name}** ({std_name}) — "
+                            f"平均削減率 {summ.get('avg_removal_pct', '?')}%"
+                        )
+                        for w in summ["warnings"][:5]:
+                            st.caption(f"　• {w}")
+                        if len(summ["warnings"]) > 5:
+                            st.caption(f"　… 還有 {len(summ['warnings']) - 5} 項異常")
 
         # 篩選器 — 看單元詳情 (現在用 session_state 保留選擇)
         st.subheader("🔎 單元詳情")
@@ -834,6 +863,37 @@ with tab1:
                                "濃度": str(v.get("濃度", v.get("範圍", ""))),
                                "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
                     st.dataframe(q_rows, use_container_width=True, hide_index=True)
+
+            # 削減率分項表 (本單元的所有水質項目)
+            if _urr:
+                unit_rr = removal_results.get(selected, {})
+                items = unit_rr.get("items", {})
+                summ = unit_rr.get("summary", {})
+                if items:
+                    st.markdown("**📉 削減率分項 (Σ進流質量 → Σ出流質量)**")
+                    rr_rows = []
+                    for item, r in sorted(items.items()):
+                        pct = r["removal_pct"]
+                        flag = ""
+                        if pct < -10:
+                            flag = "⚠️ 出流>進流"
+                        elif pct > 99.5 and not any(k in item for k in ("懸浮", "SS")):
+                            flag = "⚠️ 過高"
+                        rr_rows.append({
+                            "水質項目": item,
+                            "進流總質量 (g/d)": r["in_mass"],
+                            "出流總質量 (g/d)": r["out_mass"],
+                            "削減率 (%)": pct,
+                            "備註": flag,
+                        })
+                    st.dataframe(rr_rows, use_container_width=True, hide_index=True)
+                    cc1, cc2, cc3, cc4 = st.columns(4)
+                    cc1.metric("涵蓋項目", summ["items_count"])
+                    cc2.metric("平均削減率", f"{summ['avg_removal_pct']}%")
+                    cc3.metric("最低", f"{summ['min_removal_pct']}%")
+                    cc4.metric("最高", f"{summ['max_removal_pct']}%")
+                else:
+                    st.caption("(此單元無進+出兩邊都有資料的水質項目, 無法計算削減率)")
 
         # 下載
         st.divider()
