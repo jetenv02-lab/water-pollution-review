@@ -6,9 +6,22 @@
     - 沿用現有 _審查紀錄 分頁的表頭 (6 欄): 審查文件 / 不合理數量 / 審查結果 / 審查時間 / 審查次數 / 比對結果檔案位置
     - 額外加 4 欄 (本次需要的): 待人工 / 處理單元數 / 耗時(秒) / 規則庫版本 / 同義字數
     - 失敗不致命 (沒設 service account 或 Sheet 沒分享, 都會 silent skip)
+    - 時區: 強制台北 (Asia/Taipei, UTC+8), 不受 Streamlit Cloud 伺服器時區影響
 """
 import os
 from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    TPE_TZ = ZoneInfo("Asia/Taipei")
+except Exception:
+    # 後備: 直接固定 +8 偏移 (Python <3.9 或缺 tzdata)
+    from datetime import timezone, timedelta
+    TPE_TZ = timezone(timedelta(hours=8))
+
+
+def _now_tpe():
+    """目前時間 (台北時區)。"""
+    return datetime.now(TPE_TZ)
 
 DEFAULT_SHEET_ID = "1FOx4Wu1PVidbaC-89HBzyQSK7cBOOvxfu4RxLoBqwBQ"
 WORKSHEET_NAME = "_審查紀錄"
@@ -114,14 +127,14 @@ def append_review_record(record, sheet_id=None):
             else:
                 result = f"不合理 {unreasonable} 項"
 
-        # 規則庫版本: 用 rules_extracted.csv 最後修改時間
+        # 規則庫版本: 用 rules_extracted.csv 最後修改時間 (台北時區)
         rule_version = ""
         try:
             import sheets_sync
             csv_path = sheets_sync.RULES_CSV
             if os.path.exists(csv_path):
                 mtime = os.path.getmtime(csv_path)
-                rule_version = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                rule_version = datetime.fromtimestamp(mtime, TPE_TZ).strftime("%Y-%m-%d %H:%M")
         except Exception:
             pass
 
@@ -129,7 +142,7 @@ def append_review_record(record, sheet_id=None):
             filename,
             unreasonable,
             result,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            _now_tpe().strftime("%Y-%m-%d %H:%M:%S"),
             review_times,
             record.get("report_path", ""),
             manual,

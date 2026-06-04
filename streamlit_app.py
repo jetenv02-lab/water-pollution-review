@@ -320,10 +320,15 @@ with st.sidebar:
     st.header("系統狀態")
     st.metric("規則總數", len(rules))
     st.metric("槽體分類數", len(rules_by_tank))
-    # 顯示 CSV 檔案修改時間 + 大小, 方便確認是否吃到最新 CSV
+    # 顯示 CSV 檔案修改時間 + 大小 (台北時區)
     if os.path.exists(CSV_PATH):
         import datetime as _dt
-        mtime = _dt.datetime.fromtimestamp(os.path.getmtime(CSV_PATH))
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            _tz_tpe = _ZI("Asia/Taipei")
+        except Exception:
+            _tz_tpe = _dt.timezone(_dt.timedelta(hours=8))
+        mtime = _dt.datetime.fromtimestamp(os.path.getmtime(CSV_PATH), _tz_tpe)
         st.caption(f"CSV: {os.path.getsize(CSV_PATH)//1024} KB · {mtime.strftime('%m-%d %H:%M')}")
     if st.button("🔄 清快取重載", help="若顯示舊資料,點此清快取"):
         st.cache_data.clear()
@@ -696,12 +701,19 @@ with tab1:
                     "elapsed": int(total_elapsed),
                 }
 
-                # 記錄到 session 歷史 (重整就消失, 但本次 session 可看)
+                # 記錄到 session 歷史 (重整就消失, 但本次瀏覽可看)
+                # 強制台北時區 (Streamlit Cloud 預設可能是 UTC)
                 from datetime import datetime as _dt
+                try:
+                    from zoneinfo import ZoneInfo as _ZI
+                    _tpe_tz = _ZI("Asia/Taipei")
+                except Exception:
+                    from datetime import timezone as _tz, timedelta as _td
+                    _tpe_tz = _tz(_td(hours=8))
                 if "_review_history" not in st.session_state:
                     st.session_state["_review_history"] = []
                 review_record = {
-                    "time": _dt.now().strftime("%H:%M:%S"),
+                    "time": _dt.now(_tpe_tz).strftime("%H:%M:%S"),
                     "filename": uploaded.name,
                     "units": app_data_local["total_units"],
                     "unreasonable": stats["不合理"],
@@ -1911,7 +1923,17 @@ with tab_import:
         importer_ok = False
 
     if importer_ok:
-        from datetime import date as _date
+        from datetime import date as _date, datetime as _dt2
+        try:
+            from zoneinfo import ZoneInfo as _ZI2
+            _tz_tpe2 = _ZI2("Asia/Taipei")
+        except Exception:
+            from datetime import timezone as _tz2, timedelta as _td2
+            _tz_tpe2 = _tz2(_td2(hours=8))
+
+        def _today_tpe():
+            """今天的日期 (台北時區)。"""
+            return _dt2.now(_tz_tpe2).date()
 
         # 預先讀現有 _來源清單 算下個 S 編號
         try:
@@ -2339,7 +2361,7 @@ with tab_import:
                     # ── Step 3: 基本資料 (自動帶入, 可選修改) ──
                     with st.expander("📝 基本資料 (系統已自動帶入, 可選擇修改)", expanded=False):
                         col_m1, col_m2 = st.columns(2)
-                        today_str = _date.today().strftime("%Y-%m-%d")
+                        today_str = _today_tpe().strftime("%Y-%m-%d")
                         with col_m1:
                             src_filename = st.text_input(
                                 "審查意見檔名 (自動)", value=auto_filename,
@@ -2366,14 +2388,14 @@ with tab_import:
                         src_filename = auto_filename or "未命名審查意見"
                         src_technician = auto_technicians
                         src_cert = ""
-                        src_date = _date.today().strftime("%Y-%m-%d")
+                        src_date = _today_tpe().strftime("%Y-%m-%d")
                         src_company = ""
                         src_note = ""
                     else:
                         src_filename = st.session_state.get("imp_filename", auto_filename) or auto_filename or "未命名審查意見"
                         src_technician = st.session_state.get("imp_technician", auto_technicians)
                         src_cert = st.session_state.get("imp_cert", "")
-                        src_date = st.session_state.get("imp_date", _date.today().strftime("%Y-%m-%d"))
+                        src_date = st.session_state.get("imp_date", _today_tpe().strftime("%Y-%m-%d"))
                         src_company = st.session_state.get("imp_company", "")
                         src_note = st.session_state.get("imp_note", "")
 

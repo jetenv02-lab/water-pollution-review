@@ -27,6 +27,11 @@ import csv
 import json
 import os
 from datetime import datetime
+try:
+    from tz_util import fmt_tpe as _fmt_tpe
+except Exception:
+    def _fmt_tpe(fmt="%Y-%m-%d %H:%M:%S"):
+        return datetime.now().strftime(fmt)
 
 # 預設 Sheet 設定
 DEFAULT_SHEET_ID = "1FOx4Wu1PVidbaC-89HBzyQSK7cBOOvxfu4RxLoBqwBQ"
@@ -190,7 +195,7 @@ def refresh_source_list_stats():
     sync_time_idx = (headers_src.index("最後同步時間") + 1
                      if "最後同步時間" in headers_src else None)
 
-    sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sync_time = _fmt_tpe()
     updated = 0
     for row in range(2, ws_src.max_row + 1):
         code = ws_src.cell(row=row, column=code_idx).value
@@ -306,7 +311,7 @@ def export_xlsx_to_csv():
             "ok": True,
             "rows_written": len(flat_rows),
             "csv_path": RULES_CSV,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _fmt_tpe(),
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -321,7 +326,7 @@ def _backup_current_xlsx():
     if not os.path.exists(RULES_XLSX):
         return None
     os.makedirs(BACKUP_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = _fmt_tpe("%Y%m%d_%H%M%S")
 
     backup_info = {}
     # 備份 xlsx
@@ -431,7 +436,7 @@ def upload_xlsx_to_sheets(sheet_id=None):
             "total_data_rows": sum(s["rows"] - 1 for s in sheets_written if s["rows"] > 1),
             "sheet_url": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit",
             "source": source,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _fmt_tpe(),
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -541,7 +546,7 @@ def download_sheets_to_xlsx(sheet_id=None):
             "backup": backup,
             "sheet_url": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit",
             "source": source,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _fmt_tpe(),
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}

@@ -13,6 +13,11 @@ import io
 import os
 import re
 from datetime import datetime
+try:
+    from tz_util import fmt_tpe as _fmt_tpe
+except Exception:
+    def _fmt_tpe(fmt="%Y-%m-%d %H:%M:%S"):
+        return datetime.now().strftime(fmt)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 RULES_XLSX = os.path.join(BASE, "規則庫.xlsx")
@@ -428,7 +433,7 @@ def _backup_xlsx_before_import():
         return None
     backup_dir = os.path.join(BASE, "backup")
     os.makedirs(backup_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = _fmt_tpe("%Y%m%d_%H%M%S")
     dst = os.path.join(backup_dir, f"規則庫_{ts}_pre_import.xlsx")
     with open(RULES_XLSX, "rb") as src, open(dst, "wb") as out:
         out.write(src.read())
@@ -567,7 +572,7 @@ def commit_import(parsed_rows, source_metadata, skip_missing=True):
             elif h == "簽證事業名稱":
                 row_data.append(source_metadata.get("簽證事業名稱", ""))
             elif h == "匯入日期":
-                row_data.append(datetime.now().strftime("%Y-%m-%d"))
+                row_data.append(_fmt_tpe("%Y-%m-%d"))
             elif h == "備註":
                 row_data.append(source_metadata.get("備註", "Streamlit 半自動匯入"))
             elif h == "涵蓋槽體數":
@@ -575,7 +580,7 @@ def commit_import(parsed_rows, source_metadata, skip_missing=True):
             elif h == "貢獻規則數":
                 row_data.append(imported_count)
             elif h == "最後同步時間":
-                row_data.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                row_data.append(_fmt_tpe())
             else:
                 row_data.append("")
         ws_src.append(row_data)
@@ -590,7 +595,7 @@ def commit_import(parsed_rows, source_metadata, skip_missing=True):
         "source_full": source_full,
         "new_tanks_created": new_tanks_created,
         "backup": backup,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": _fmt_tpe(),
     }
 
 
