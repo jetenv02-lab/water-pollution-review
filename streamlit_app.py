@@ -330,14 +330,14 @@ with st.sidebar:
         st.rerun()
     st.divider()
 
-    # ───────── 本次 session 審查歷史 ─────────
+    # ───────── 本次瀏覽審查歷史 (重整頁面後即消失) ─────────
     history = st.session_state.get("_review_history", [])
     if history:
         st.markdown("**📋 本次審查歷史**")
-        st.caption("(本次瀏覽 session · 永久紀錄請看「📊 規則庫瀏覽」)")
-        # 最近一次的 Sheet 寫入狀態
+        st.caption("(本次瀏覽紀錄 · 完整歷史請看「📊 規則庫瀏覽 → 📋 歷次審查紀錄」)")
+        # 雲端寫入狀態 — 對使用者隱藏細節, 只顯示成功訊息
         log_status = st.session_state.get("_last_sheet_log_status")
-        if log_status:
+        if log_status and log_status.startswith("✅"):
             st.caption(log_status)
         for i, h in enumerate(history[:5]):
             with st.container(border=True):
@@ -365,7 +365,7 @@ with st.sidebar:
     st.text("- 水流串接圖")
     st.divider()
     st.markdown("**專案連結**")
-    st.markdown("[GitHub](https://github.com/jetenv02-lab/water-pollution-review)")
+    st.markdown("[GitHub 專案頁面](https://github.com/jetenv02-lab/water-pollution-review)")
 
     # 顯示 import 失敗模組 (debug 用)
     if _import_errors:
@@ -712,20 +712,19 @@ with tab1:
                 # 限制歷史只保留最近 10 筆
                 st.session_state["_review_history"] = st.session_state["_review_history"][:10]
 
-                # 同時把這筆寫到 Sheet 的 _審查紀錄 分頁 (跨 session 持久化)
+                # 寫入歷史紀錄
                 try:
                     import review_history
                     sheet_result = review_history.append_review_record(review_record)
                     if sheet_result.get("ok"):
                         st.session_state["_last_sheet_log_status"] = (
-                            f"✅ 紀錄已存到 Sheet (第 {sheet_result['review_times']} 次審查此文件)"
+                            f"✅ 紀錄已存檔 (本文件第 {sheet_result['review_times']} 次審查)"
                         )
                     else:
-                        st.session_state["_last_sheet_log_status"] = (
-                            f"⚠️ Sheet 紀錄失敗: {sheet_result.get('error', '?')[:80]}"
-                        )
-                except Exception as _e:
-                    st.session_state["_last_sheet_log_status"] = f"⚠️ Sheet 紀錄失敗: {_e}"
+                        # 失敗不顯示給使用者 — 改成內部記錄即可, 不影響主流程
+                        st.session_state["_last_sheet_log_status"] = ""
+                except Exception:
+                    st.session_state["_last_sheet_log_status"] = ""
             except RuntimeError as _re:
                 # 使用者按了停止鈕 (在 step 之間檢查到 _cancel_requested)
                 if "停止" in str(_re):
@@ -1686,10 +1685,10 @@ with tab2:
             width="stretch", hide_index=True,
         )
 
-    # ── 跨 session 永久審查紀錄 (從 Sheet 讀) ──
+    # ── 歷次審查紀錄 ──
     st.divider()
-    st.subheader("📋 歷次審查紀錄 (跨 session 永久)")
-    st.caption("從 Google Sheet 的 `_審查紀錄` 分頁讀取。每次「開始完整審查」完成會自動 append 一列。")
+    st.subheader("📋 歷次審查紀錄")
+    st.caption("每次「開始完整審查」完成後會自動記錄一筆。")
 
     col_h1, col_h2 = st.columns([1, 4])
     with col_h1:
@@ -1721,19 +1720,17 @@ with tab2:
         else:
             st.info("尚無歷史紀錄。執行一次「🚀 開始審查」後會自動寫進來。")
     else:
-        err = sheet_history.get("error", "未知錯誤")
-        st.warning(f"無法載入: {err[:200]}")
-        st.caption("可能原因: 未設定 Service Account / Sheet 沒分享 / 網路問題")
+        st.warning("⚠️ 暫時無法載入歷史紀錄,請稍後重試。")
 
 # ─────────────────────────────────────────────
 # 規則庫管理 (Google Sheets 同步) — v2: xlsx 為主, csv 自動衍生
 # ─────────────────────────────────────────────
 with tab_sync:
-    st.subheader("🔄 規則庫 ↔ Google Sheets 同步")
+    st.subheader("🔄 規則庫 ↔ 線上協作表 同步")
     st.markdown(
-        "**規則庫.xlsx** 是主檔 (跟同事編輯的那份一樣)。\n"
-        "**Google Sheet** 是同事的線上編輯場 (結構同 xlsx, 每槽體一分頁)。\n"
-        "**rules_extracted.csv** 是「衍生物」, 自動由 xlsx 產出, 給審查程式跑。"
+        "**規則庫.xlsx** 是審查系統的主檔。\n"
+        "**線上協作表** 是供審查人員集體編輯的雲端版本 (結構與 xlsx 對應, 每個槽體一個分頁)。\n"
+        "**rules_extracted.csv** 為自動衍生檔, 由 xlsx 產出供審查程式讀取。"
     )
 
     # 載入同步模組
@@ -1741,30 +1738,25 @@ with tab_sync:
         import sheets_sync
         sync_ok = True
     except Exception as e:
-        st.error(f"無法載入 sheets_sync 模組: {e}")
-        st.info("請先 `pip install gspread google-auth` (或檢查 requirements.txt)")
+        st.error(f"無法載入同步模組: {e}")
         sync_ok = False
 
     if sync_ok:
-        # ── 認證狀態 ──
+        # ── 連線狀態 (不洩露帳號細節) ──
         status = sheets_sync.check_auth_status()
         if status["ok"]:
-            st.success(f"✅ {status['message']}")
-            st.caption(f"Service Account: `{status['email']}`")
+            st.success("✅ 已連線到線上協作表")
         else:
-            st.warning(f"⚠️ {status['message']}")
-            st.info(
-                "請先按照 **SHEETS_SETUP.md** 完成 Service Account 申請設定。"
-            )
+            st.warning("⚠️ 尚未連線到線上協作表 (相關功能無法使用)")
 
         st.divider()
 
-        # ── Sheet 連結 ──
+        # ── 協作表連結 (用按鈕導向, 不直接秀 ID) ──
         sheet_url = f"https://docs.google.com/spreadsheets/d/{sheets_sync.DEFAULT_SHEET_ID}/edit"
         col_link_a, col_link_b = st.columns([3, 2])
         with col_link_a:
-            st.markdown(f"**📄 Google Sheet** (給同事編): [打開 Sheet]({sheet_url})")
-            st.caption(f"Sheet ID: `{sheets_sync.DEFAULT_SHEET_ID}`")
+            st.markdown(f"**📄 線上協作表**: [打開協作表]({sheet_url})")
+            st.caption("審查人員可在此瀏覽 / 編輯規則內容")
         with col_link_b:
             xlsx_exists = os.path.exists(sheets_sync.RULES_XLSX)
             csv_exists = os.path.exists(sheets_sync.RULES_CSV)
@@ -1852,7 +1844,7 @@ with tab_sync:
                         st.caption(f"已備份: `{os.path.basename(r['backup'].get('xlsx',''))}`")
                     if r.get("csv_export", {}).get("ok"):
                         st.caption(f"已產出 csv: {r['csv_export']['rows_written']} 筆")
-                    st.warning("⚠️ 記得 git push xlsx + csv 上 GitHub, 線上版才會生效")
+                    st.info("💡 線上版規則更新需請系統管理員部署")
                 else:
                     st.error(f"❌ 失敗: {r.get('error', '?')}")
 
@@ -1897,7 +1889,7 @@ with tab_sync:
             df_bk = df_bk[["mtime", "name", "size_kb"]]
             df_bk.columns = ["時間", "檔名", "大小 KB"]
             st.dataframe(df_bk, width="stretch", hide_index=True)
-            st.caption(f"備份目錄: `{sheets_sync.BACKUP_DIR}` (已加 .gitignore, 不會推到 GitHub)")
+            st.caption(f"備份目錄: `{sheets_sync.BACKUP_DIR}` (本機保留)")
         else:
             st.info("尚無備份。第一次「下載 Sheet → CSV」後會自動產生。")
 
@@ -1907,7 +1899,7 @@ with tab_sync:
 with tab_import:
     st.subheader("📥 匯入新審查意見規則")
     st.markdown(
-        "**半自動流程**: 你 (或同事) 用 NotebookLM 把審查意見 PDF 抽出結構化規則 → 複製貼上 → "
+        "**半自動流程**: 上傳審查意見 PDF / 圖片 / CSV / xlsx, 或直接貼上文字 → "
         "系統解析 + 預覽 + 衝突檢查 → 確認後自動寫入主檔。"
     )
 
@@ -1964,46 +1956,9 @@ with tab_import:
             if gemini_ok:
                 g_status = gemini_extractor.check_gemini_status()
                 if g_status["ok"]:
-                    st.success(
-                        f"✅ Gemini {g_status['message']} "
-                        f"(key: `{g_status['key_preview']}`)"
-                    )
+                    st.success("✅ AI 抽取服務已就緒")
                 else:
-                    st.warning(f"⚠️ {g_status['message']}")
-                    st.info(
-                        "請在 Streamlit Cloud Secrets 加上一行 "
-                        "(必須在 `[gcp_service_account]` block **之後** 留空一行再加):\n\n"
-                        "```toml\n"
-                        "[gcp_service_account]\n"
-                        "...\n"
-                        "universe_domain = \"googleapis.com\"\n"
-                        "\n"
-                        "gemini_api_key = \"AQ.xxxxx\"\n"
-                        "```\n\n"
-                        "貼完按 Save → 線上版會自動重啟 (或右上「⋮ → Reboot app」強制)"
-                    )
-                    # debug: 顯示 st.secrets 看得到的 top-level key 名稱 (不顯示值)
-                    available = g_status.get("available_keys", [])
-                    if available:
-                        st.caption(
-                            f"🔍 **Debug** — 系統在 `st.secrets` 看到的 key 名稱: "
-                            f"`{available}`"
-                        )
-                        if "gemini_api_key" in available:
-                            st.error(
-                                "⚠️ key 看得到, 但讀取失敗 (可能是程式 bug, 截圖給開發者)"
-                            )
-                        elif "gcp_service_account" in available and len(available) == 1:
-                            st.warning(
-                                "⚠️ 只看到 `gcp_service_account`, 沒有 `gemini_api_key`. "
-                                "可能 `gemini_api_key` 跑到 block **裡面** 了, "
-                                "請在 `universe_domain = \"...\"` 那行**下一行**留空, "
-                                "再下一行才寫 `gemini_api_key = \"...\"`"
-                            )
-                        else:
-                            st.info(
-                                "可能 Secrets 還沒生效, 試試右上 ⋮ → Reboot app"
-                            )
+                    st.warning("⚠️ AI 抽取服務尚未啟用 (此功能暫不可用)")
 
                 uploaded_pdf = st.file_uploader(
                     "拖 PDF 到這裡 (審查意見書)",
@@ -2094,11 +2049,9 @@ with tab_import:
             if vision_ok:
                 _vstat = gemini_extractor.check_gemini_status()
                 if _vstat["ok"]:
-                    st.success(
-                        f"✅ Gemini Vision 已啟用 (key: `{_vstat['key_preview']}`)"
-                    )
+                    st.success("✅ AI 影像辨識已就緒")
                 else:
-                    st.warning(f"⚠️ {_vstat['message']}")
+                    st.warning("⚠️ AI 影像辨識尚未啟用 (此功能暫不可用)")
 
                 uploaded_imgs = st.file_uploader(
                     "拖入 1~N 張審查意見書截圖 (PNG / JPG / WEBP)",
@@ -2463,63 +2416,150 @@ with tab_import:
                                 st.info(f"🆕 新建分頁: {', '.join(result['new_tanks_created'])}")
                             if result.get("backup"):
                                 st.caption(f"備份: `{os.path.basename(result['backup'])}`")
-                            st.warning(
-                                "⚠️ 下一步:\n"
+                            st.info(
+                                "💡 後續流程:\n"
                                 "1. 切到「🔄 規則庫管理」分頁\n"
-                                "2. 按「⬆️ 上傳 xlsx → Sheet」(讓同事看到新規則)\n"
-                                "3. 本機 git push (推到 GitHub, 線上版生效)"
+                                "2. 按「⬆️ 上傳 xlsx → 協作表」讓新規則同步到雲端\n"
+                                "3. 通知系統管理員將新規則部署到線上版"
                             )
                         else:
                             st.error(f"❌ 失敗: {result.get('error', '?')}")
 
 with tab3:
-    st.subheader("水措審查系統 v3 — 使用說明")
+    st.subheader("📖 水措審查系統 — 使用說明")
+
     st.markdown("""
-### v3 版本能力
+## 🎯 系統用途
 
-| 項目 | 狀態 |
+協助環工技師審查「水污染防治措施」申請文件 (PDF), 自動找出**不符合學理**或**需人工複核**的項目, 並比對審查意見規則庫。
+
+---
+
+## 🚀 快速開始 (一鍵完整審查)
+
+### Step 1 · 上傳申請文件
+在「**🚀 開始審查**」分頁, 把申請文件 PDF 拖到上傳區。
+
+### Step 2 · 選擇選項
+- **✂️ 只處理「參、水污染防治措施資料」章節** (預設打勾, 加速 5–10 倍)
+- **事業類別**: 選了之後系統會檢查該類別應申報的項目是否漏項; 不選就跳過此檢查。
+
+### Step 3 · 按「🚀 開始完整審查」
+系統會自動執行三大步驟, 過程中**整個畫面會被遮罩**, 中央顯示:
+- 目前進行到哪個 step
+- 完成百分比 + 進度條
+- 已耗時 / 預估剩餘時間
+
+如需提前結束, 按右下角的「🛑 停止審查」(會中斷剩下的步驟, 已完成的會保留)。
+
+### Step 4 · 看結果
+完成後會出現「**智能審查結果**」區域, 依**類型分組** (質量平衡 / 去除率 / 設計參數 / 機具設施 / 水質標準 …), 每筆都有:
+- 🔴 / 🟡 嚴重度
+- 涉及單元
+- 數值佐證 (例: 表面溢流率 67 m³/m²·d)
+- 學理依據
+
+可用上方的「依類型 / 依單元 / 關鍵字」三個篩選器縮小範圍。
+
+---
+
+## 🔍 額外功能
+
+### 📊 水量平衡示意圖解析 (跨單元流向)
+PDF 抽取完成後, 在主畫面往下捲動會看到「**📊 水量平衡示意圖解析**」摺疊區, 展開後按「🤖 開始解析」。系統會用 AI 視覺辨識讀取流向示意圖, 得到:
+- 每條箭頭的 `from_unit` / `to_unit` / `Q (CMD)` / 對應的 WTA/WTB 編號
+- 外部進入 (原廢水 WMxx) 與放流口 (Dxx)
+- **跨單元質量平衡檢核** (Σ進 ≈ Σ出)
+- **編號一致性檢核** (同一條水兩端編號流量是否一致)
+
+解析完之後, 單元詳細頁的「進/出流水質」編號旁邊會直接帶出該條流的 `Q = XXX CMD`。
+
+### 🖼 OCR 流向圖 (備用)
+如果 AI 視覺辨識不可用, 系統會用本地 OCR 把流向圖上的:
+- 處理單元代號 (T01-01, T02-03 …)
+- 流量數值 (Q = 47.5 CMD)
+- 加藥量、含水率
+
+讀取出來, 並依座標自動配對到最近的處理單元。
+
+### 🔗 水流串接圖
+每個單元的詳細頁有「**🔗 水流串接**」, 顯示這個單元的上游 (誰流進來) 與下游 (流到哪去), 系統會用水質指紋自動配對 WTA → WTB。
+
+### 📉 削減率分項
+每個單元若進+出流兩邊都有水質質量資料, 系統會自動算:
+- 每個水質項目的「進流總質量 → 出流總質量 → 削減率 %」
+- 異常標記 (削減率 < -10% 或 > 99.5% 視單元類型)
+
+### 📥 下載結果
+- **Excel** (各單元設計參數 / 量測參數 / 機具 / 進出流水質 一頁一單元)
+- **JSON** (完整結構化資料, 可供其他程式使用)
+
+---
+
+## 📊 規則庫瀏覽
+
+切到「**📊 規則庫瀏覽**」分頁:
+- 看目前規則庫總筆數、依槽體分組、依嚴重度分布
+- 「📋 歷次審查紀錄」會列出所有跑過的審查 (檔名 / 單元數 / 不合理 / 待人工 / 耗時)
+
+## 🔄 規則庫管理
+
+切到「**🔄 規則庫管理**」分頁:
+- **⬆️ 上傳 xlsx → 協作表**: 把本機規則庫推到雲端線上協作表
+- **⬇️ 下載協作表 → xlsx**: 把雲端最新規則拉回本機 (會自動備份舊版)
+- **🔄 重產 csv**: 從 xlsx 重新產出 csv (供審查引擎讀取)
+
+## 📥 匯入新規則 (半自動)
+
+當有新的「審查意見書」想加入規則庫, 切到「**📥 匯入新規則**」分頁, 提供 4 種輸入方式:
+
+| 方式 | 適用 |
 |------|------|
-| 單元偵測覆蓋率 | **100%** (38/38) |
-| 單元類型歸類 | **完全正確** (中和池/沉澱池/慢混池...) |
-| 設計操作參數 | **已抽取** (停留時間/有效容量/攪拌轉速...) |
-| 量測操作參數 | **已抽取** (pH/加藥量/DO...) |
-| 機具設施 | **已抽取** (pH計/液位計/攪拌機 + 馬力數) |
-| 進出流水質 | **已抽取** (各 35 流向、含 21+ 水質項目) |
-| 章節動態定位 | **已支援** (不寫死頁碼,各家工廠都適用) |
-| 流向圖 OCR | **已支援** (RapidOCR 中文識別) |
-| 智能審查 | **已支援** (學理檢查、不再全部待人工) |
+| 🤖 上傳 PDF | 整份審查意見書 PDF, AI 自動結構化抽取 |
+| 📷 上傳圖片 | 截圖/掃描的審查意見書, AI 視覺辨識 |
+| 📎 上傳檔案 | 已整理好的 CSV / xlsx |
+| 📝 貼上文字 | 從其他工具複製貼上 |
 
-### 使用流程
+系統會解析 → 預覽 → 衝突檢查 → 確認後寫入主檔。匯入完成後請切到「🔄 規則庫管理」上傳到協作表。
 
-1. **上傳 PDF** → 點「開始解析」
-2. **看「本文件章節定位」** → 系統會列出本份文件每個區段在第幾頁
-3. **看「處理單元清單」** → 38 個單元 + 對應標準槽體類型
-4. **執行 OCR** → 對流向圖/水量平衡圖跑 OCR、抽出流量/加藥/含水率
-5. **執行智能審查** → 自動列出不合理項目 + 學理依據
+---
 
-### 智能審查涵蓋的學理規則
+## ⚙️ 智能審查涵蓋規則
 
-- **質量守恆**: 溶解性物質(硝酸鹽/硼/Cl-)不應在無濃縮機制單元自行濃縮
-- **去除位置學理**: 快混槽/pH調整槽無固液分離,不應展現重金屬去除
-- **pH 槽特性**: pH 調整槽除 pH 外,其他水質應不變
-- **沉澱設計**: 表面溢流率應 < 50 m3/m2-d
-- **必要機具**: 各槽體應有的液位計/pH計/排泥等設施
+### 質量平衡
+- 溶解性物質 (硝酸鹽 / 硼 / Cl⁻) 在無濃縮機制單元不應自行濃縮
+- 跨單元: Σ 所有進流 Q ≈ Σ 所有出流 Q
 
-### 抽取邏輯
+### 去除位置學理
+- 快混槽 / pH 調整槽**無固液分離**, 不應展現重金屬去除
+- pH 調整槽除 pH 外, 其他水質應不變
 
-1. **掃描所有頁,找兩種關鍵區段**
-   - 處理設施資料表（含「(一)處理單元名稱：xxx 序號：T01-01 代碼：120」）
-   - 進出水質資料表（含「單元序號：T01-01」、「進流水流編號：WTB...」、「出流水流編號：WTA...」）
-2. **解析設施資料表**: 抽 (二)設計參數、(三)量測參數、(四)機具設施
-3. **解析水質表**: 抽各水質項目的濃度、質量、pH 範圍
-4. **OCR 流向圖**: 用 RapidOCR 讀取圖片頁面 → 抽單元代號/Q/加藥/含水率
+### 設計參數
+- 沉澱池表面溢流率應 < 50 m³/m²·d
+- 各槽體的停留時間 / 有效容積 / 加藥量範圍
 
-### 剩餘限制
+### 機具設施
+- 各槽體應有的液位計、pH 計、排泥裝置、攪拌機等
 
-- 規則庫目前 53 筆,完整版 235 筆萃取中
-- 比對引擎可繼續擴充更多學理規則
-- 大型 PDF (>100MB) 建議用本地版執行
+### 規則庫驅動
+- 依環工技師過往查核缺失歸納的學理規則
+
+---
+
+## ❓ 常見問題
+
+**Q: 為什麼按了「開始完整審查」之後其他按鈕都不能點?**
+A: 為了避免中途中斷處理, 整個畫面會被遮罩。若真的要中止, 用右下角「🛑 停止審查」按鈕。
+
+**Q: 流向示意圖辨識失敗怎麼辦?**
+A: 系統會自動 fallback 到本地 OCR; 可在主畫面下方「💧 識別到的流量 Q」摺疊區看 OCR 直接讀到的資料。
+
+**Q: 進流水質的 Q 值哪裡來?**
+A: 來自「📊 水量平衡示意圖解析」的結果 — 圖上實際標的 `Q = XXX CMD`, 不是計算的。沒跑過示意圖解析的話, 編號旁邊不會顯示 Q。
+
+**Q: 大型 PDF (>100MB) 跑很慢?**
+A: 建議勾選「✂️ 只處理「參、水污染防治措施資料」章節」, 可省下 5–10 倍時間。
 """)
 
 st.divider()
-st.caption("水措審查系統 v3 · 章節定位 + OCR + 智能審查 · [GitHub](https://github.com/jetenv02-lab/water-pollution-review)")
+st.caption("水措審查系統 · 章節定位 + OCR + AI 視覺辨識 + 智能審查")
