@@ -674,7 +674,7 @@ with tab1:
                                     import pandas as _pd
                                     if fr["all_flows"]:
                                         df_f = _pd.DataFrame(fr["all_flows"]).astype(str)
-                                        st.dataframe(df_f, use_container_width=True, hide_index=True)
+                                        st.dataframe(df_f, width="stretch", hide_index=True)
                                     else:
                                         st.info("沒有抽到流向")
 
@@ -682,21 +682,21 @@ with tab1:
                                         st.markdown("**📥 外部原廢水 (WM)**")
                                         st.dataframe(
                                             _pd.DataFrame(fr["all_external_inputs"]).astype(str),
-                                            use_container_width=True, hide_index=True
+                                            width="stretch", hide_index=True
                                         )
 
                                     if fr["all_discharge_points"]:
                                         st.markdown("**📤 放流口 (D)**")
                                         st.dataframe(
                                             _pd.DataFrame(fr["all_discharge_points"]).astype(str),
-                                            use_container_width=True, hide_index=True
+                                            width="stretch", hide_index=True
                                         )
 
                                 with tabs[1]:
                                     if fr["all_units"]:
                                         import pandas as _pd
                                         df_u = _pd.DataFrame(fr["all_units"]).astype(str)
-                                        st.dataframe(df_u, use_container_width=True, hide_index=True)
+                                        st.dataframe(df_u, width="stretch", hide_index=True)
                                         st.caption(f"圖中共 {len(fr['all_units'])} 個處理單元")
                                     else:
                                         st.info("沒有抽到單元")
@@ -723,7 +723,7 @@ with tab1:
                                         import pandas as _pd
                                         st.dataframe(
                                             _pd.DataFrame(rows_b).astype(str),
-                                            use_container_width=True, hide_index=True
+                                            width="stretch", hide_index=True
                                         )
 
                                 with tabs[3]:
@@ -748,7 +748,7 @@ with tab1:
                                         import pandas as _pd
                                         st.dataframe(
                                             _pd.DataFrame(warn_rows).astype(str),
-                                            use_container_width=True, hide_index=True
+                                            width="stretch", hide_index=True
                                         )
                                     else:
                                         st.success("✅ 沒有編號一致性問題")
@@ -760,7 +760,7 @@ with tab1:
                                             import pandas as _pd
                                             st.dataframe(
                                                 _pd.DataFrame(consistency["unmatched_from"]).astype(str),
-                                                use_container_width=True, hide_index=True
+                                                width="stretch", hide_index=True
                                             )
                                             st.caption("可能原因: 圖中沒標下游 WTB 編號 / Gemini 漏抽 / 該箭頭實際進入外部")
 
@@ -771,7 +771,7 @@ with tab1:
                                             import pandas as _pd
                                             st.dataframe(
                                                 _pd.DataFrame(consistency["unmatched_to"]).astype(str),
-                                                use_container_width=True, hide_index=True
+                                                width="stretch", hide_index=True
                                             )
                                             st.caption("可能原因: 來自外部原廢水 (WM) / Gemini 漏抽上游編號")
 
@@ -789,7 +789,7 @@ with tab1:
                                             import pandas as _pd
                                             st.dataframe(
                                                 _pd.DataFrame(cg_rows).astype(str),
-                                                use_container_width=True, hide_index=True
+                                                width="stretch", hide_index=True
                                             )
 
                                 with tabs[4]:
@@ -845,7 +845,7 @@ with tab1:
                                             import pandas as _pd
                                             st.dataframe(
                                                 _pd.DataFrame(cmp_rows).astype(str),
-                                                use_container_width=True, hide_index=True
+                                                width="stretch", hide_index=True
                                             )
 
                                 with tabs[5]:
@@ -930,13 +930,13 @@ with tab1:
                                 st.markdown(f"**📦 槽體資料 ({len(result['units'])} 個)**")
                                 import pandas as _pd
                                 df_u = _pd.DataFrame(result["units"]).astype(str)
-                                st.dataframe(df_u, use_container_width=True, hide_index=True)
+                                st.dataframe(df_u, width="stretch", hide_index=True)
 
                             if result.get("flows"):
                                 st.markdown(f"**🌊 流向資料 ({len(result['flows'])} 條)**")
                                 import pandas as _pd
                                 df_f = _pd.DataFrame(result["flows"]).astype(str)
-                                st.dataframe(df_f, use_container_width=True, hide_index=True)
+                                st.dataframe(df_f, width="stretch", hide_index=True)
 
                             with st.expander("Raw text (圖片裡看得到的所有文字)"):
                                 st.text(result.get("raw_text", ""))
@@ -981,7 +981,7 @@ with tab1:
                     "頁數": 0,
                     "狀態": "未在文件中偵測到",
                 })
-        st.dataframe(section_rows, use_container_width=True, hide_index=True)
+        st.dataframe(section_rows, width="stretch", hide_index=True)
 
         # 統計卡片
         total_design = sum(len(u["design_params"]) for u in app_data["units"].values())
@@ -1028,7 +1028,7 @@ with tab1:
                 "📤出": len(info["effluent"]),
                 "📉削減率": removal_text,
             })
-        st.dataframe(unit_rows, use_container_width=True, hide_index=True)
+        st.dataframe(unit_rows, width="stretch", hide_index=True)
 
         # 削減率異常清單
         if _urr and removal_results:
@@ -1078,7 +1078,7 @@ with tab1:
                                  "→ 進流編號": u["to_stream"]}
                                 for u in nb["upstream"]
                             ]
-                            st.dataframe(up_rows, use_container_width=True, hide_index=True)
+                            st.dataframe(up_rows, width="stretch", hide_index=True)
                         else:
                             st.caption("(無偵測到上游, 可能是原廢水進入點或未串接)")
                     with cd:
@@ -1090,7 +1090,7 @@ with tab1:
                                  "目標進流編號": d["to_stream"]}
                                 for d in nb["downstream"]
                             ]
-                            st.dataframe(dn_rows, use_container_width=True, hide_index=True)
+                            st.dataframe(dn_rows, width="stretch", hide_index=True)
                         else:
                             st.caption("(無偵測到下游, 可能是放流口或未串接)")
                     st.divider()
@@ -1117,7 +1117,7 @@ with tab1:
                 eq_rows = [{"名稱": str(e["name"]), "位置": str(e.get("位置", "")),
                             "數量": str(e.get("數量", "")), "馬力(kW)": str(e.get("馬力_kW", ""))}
                            for e in unit["equipment"]]
-                st.dataframe(eq_rows, use_container_width=True, hide_index=True)
+                st.dataframe(eq_rows, width="stretch", hide_index=True)
 
             if unit.get("influent"):
                 st.markdown(f"**進流水質** ({len(unit['influent'])} 流向)")
@@ -1126,7 +1126,7 @@ with tab1:
                     q_rows = [{"水質項目": str(k),
                                "濃度": str(v.get("濃度", v.get("範圍", ""))),
                                "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
-                    st.dataframe(q_rows, use_container_width=True, hide_index=True)
+                    st.dataframe(q_rows, width="stretch", hide_index=True)
 
             if unit.get("effluent"):
                 st.markdown(f"**出流水質** ({len(unit['effluent'])} 流向)")
@@ -1135,7 +1135,7 @@ with tab1:
                     q_rows = [{"水質項目": str(k),
                                "濃度": str(v.get("濃度", v.get("範圍", ""))),
                                "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
-                    st.dataframe(q_rows, use_container_width=True, hide_index=True)
+                    st.dataframe(q_rows, width="stretch", hide_index=True)
 
             # 削減率分項表 (本單元的所有水質項目)
             if _urr:
@@ -1159,7 +1159,7 @@ with tab1:
                             "削減率 (%)": pct,
                             "備註": flag,
                         })
-                    st.dataframe(rr_rows, use_container_width=True, hide_index=True)
+                    st.dataframe(rr_rows, width="stretch", hide_index=True)
                     cc1, cc2, cc3, cc4 = st.columns(4)
                     cc1.metric("涵蓋項目", summ["items_count"])
                     cc2.metric("平均削減率", f"{summ['avg_removal_pct']}%")
@@ -1181,7 +1181,7 @@ with tab1:
                 data=excel_buf,
                 file_name=f"{base_name}_單元資料.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width="stretch",
             )
         with col2:
             json_str = json.dumps(app_data, ensure_ascii=False, indent=2)
@@ -1190,7 +1190,7 @@ with tab1:
                 data=json_str.encode("utf-8"),
                 file_name=f"{base_name}_抽取結果.json",
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
 
     # ───────── 智能審查結果顯示 (基於 session, 由「開始完整審查」按鈕產生) ─────────
@@ -1294,7 +1294,7 @@ with tab1:
                         "描述": str(f["描述"])[:150],
                         "依據": str(f.get("依據", ""))[:80],
                     })
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                st.dataframe(rows, width="stretch", hide_index=True)
 
         if not findings:
             st.success("本份文件未偵測到明顯不合理之處 (基於目前內建的學理規則)")
@@ -1346,7 +1346,7 @@ with tab1:
                     {"Q (CMD)": str(f["q"]), "OCR 原文": str(f["text"])}
                     for f in ocr_result["all_flows"]
                 ]
-                st.dataframe(flow_rows, use_container_width=True, hide_index=True)
+                st.dataframe(flow_rows, width="stretch", hide_index=True)
 
             if ocr_result.get("all_doses"):
                 st.markdown("**識別到的加藥量:**")
@@ -1355,7 +1355,7 @@ with tab1:
                      "單位": str(d.get("unit", "")), "OCR 原文": str(d["text"])}
                     for d in ocr_result["all_doses"]
                 ]
-                st.dataframe(dose_rows, use_container_width=True, hide_index=True)
+                st.dataframe(dose_rows, width="stretch", hide_index=True)
 
             if ocr_result.get("all_moistures"):
                 st.markdown("**識別到的含水率:**")
@@ -1363,7 +1363,7 @@ with tab1:
                     {"含水率 (%)": str(m["value_pct"]), "OCR 原文": str(m["text"])}
                     for m in ocr_result["all_moistures"]
                 ]
-                st.dataframe(mois_rows, use_container_width=True, hide_index=True)
+                st.dataframe(mois_rows, width="stretch", hide_index=True)
 
             if ocr_result.get("all_units"):
                 with st.expander(f"OCR 識別到的單元代號 ({len(ocr_result['all_units'])} 個)"):
@@ -1371,7 +1371,7 @@ with tab1:
                         {"代號": str(u["code"]), "OCR 原文": str(u["text"])}
                         for u in ocr_result["all_units"]
                     ]
-                    st.dataframe(unit_rows, use_container_width=True, hide_index=True)
+                    st.dataframe(unit_rows, width="stretch", hide_index=True)
 
             pdf_name = st.session_state.get("_pdf_filename", "ocr_result")
             base_ocr = os.path.splitext(pdf_name)[0]
@@ -1412,7 +1412,7 @@ with tab2:
                 "規則": r.get("規則"),
                 "原文": (r.get("原文缺失") or "")[:100],
             } for r in display_rules[:500]],
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
     # ── 跨 session 永久審查紀錄 (從 Sheet 讀) ──
@@ -1443,7 +1443,7 @@ with tab2:
                 df_h = _pd.DataFrame(rows)
                 # 把所有欄位轉成字串 (避免 PyArrow 錯誤)
                 df_h = df_h.astype(str)
-                st.dataframe(df_h, use_container_width=True, hide_index=True)
+                st.dataframe(df_h, width="stretch", hide_index=True)
             except Exception as _e:
                 st.error(f"無法顯示表格: {_e}")
                 st.json(rows[:10])
