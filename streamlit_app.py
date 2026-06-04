@@ -1138,7 +1138,7 @@ with tab_import:
 
         input_mode = st.radio(
             "選擇輸入方式",
-            ["📎 上傳檔案 (CSV / xlsx)", "📝 貼上文字"],
+            ["🤖 上傳 PDF (Gemini 自動抽)", "📎 上傳檔案 (CSV / xlsx)", "📝 貼上文字"],
             key="imp_input_mode",
             horizontal=True,
         )
@@ -1146,8 +1146,106 @@ with tab_import:
         parse_result = None
         auto_filename = ""
         auto_technicians = ""
+        is_gemini_result = False  # 標記是否來自 Gemini (給後面複核 UI 用)
 
-        if input_mode.startswith("📎"):
+        if input_mode.startswith("🤖"):
+            # Gemini PDF 模式
+            try:
+                import gemini_extractor
+                gemini_ok = True
+            except Exception as e:
+                st.error(f"無法載入 gemini_extractor: {e}")
+                gemini_ok = False
+
+            if gemini_ok:
+                g_status = gemini_extractor.check_gemini_status()
+                if g_status["ok"]:
+                    st.success(
+                        f"✅ Gemini {g_status['message']} "
+                        f"(key: `{g_status['key_preview']}`)"
+                    )
+                else:
+                    st.warning(f"⚠️ {g_status['message']}")
+                    st.info(
+                        "請在 Streamlit Cloud Secrets 加上一行:\n\n"
+                        "```\ngemini_api_key = \"AQ.xxxxx\"\n```"
+                    )
+
+                uploaded_pdf = st.file_uploader(
+                    "拖 PDF 到這裡 (審查意見書)",
+                    type=["pdf"],
+                    key="imp_pdf_uploader",
+                    disabled=not g_status["ok"],
+                    help="Gemini 會自動讀整份 PDF, 抽出每筆缺失成結構化規則"
+                )
+
+                if "gemini_extract_result" not in st.session_state:
+                    st.session_state["gemini_extract_result"] = None
+                    st.session_state["gemini_pdf_key"] = ""
+
+                if uploaded_pdf:
+                    pdf_key = f"{uploaded_pdf.name}_{uploaded_pdf.size}"
+                    last_key = st.session_state.get("gemini_pdf_key", "")
+
+                    col_btn_e, col_st = st.columns([1, 3])
+                    with col_btn_e:
+                        re_extract = st.button(
+                            "🔄 重抽" if last_key == pdf_key else "🤖 開始抽取",
+                            type="primary",
+                            disabled=not g_status["ok"],
+                            width="stretch",
+                            key="imp_gemini_btn",
+                        )
+                    with col_st:
+                        if last_key == pdf_key and st.session_state["gemini_extract_result"]:
+                            st.caption(
+                                f"✅ 已抽過: {uploaded_pdf.name} (按重抽會再呼叫 Gemini, 會花費 token)"
+                            )
+                        else:
+                            st.caption(f"準備抽: {uploaded_pdf.name} ({uploaded_pdf.size/1024:.0f} KB)")
+
+                    if re_extract:
+                        with st.spinner("📄 讀 PDF → 🤖 呼叫 Gemini → 解析… (10-30 秒)"):
+                            ex_result = gemini_extractor.extract_rules_from_pdf(
+                                uploaded_pdf.getvalue(), uploaded_pdf.name
+                            )
+                        st.session_state["gemini_extract_result"] = ex_result
+                        st.session_state["gemini_pdf_key"] = pdf_key
+
+                    ex_result = st.session_state.get("gemini_extract_result")
+                    if ex_result and st.session_state.get("gemini_pdf_key") == pdf_key:
+                        if not ex_result.get("ok"):
+                            st.error(
+                                f"❌ 失敗 ({ex_result.get('stage')}): {ex_result.get('error')}"
+                            )
+                            if ex_result.get("raw_response"):
+                                with st.expander("Gemini raw response (debug)"):
+                                    st.code(ex_result["raw_response"])
+                        else:
+                            cd = ex_result.get("confidence_dist", {})
+                            usage = ex_result.get("gemini_usage", {})
+                            st.success(
+                                f"✅ Gemini 抽出 **{ex_result['row_count']}** 筆 "
+                                f"(高信心 {cd.get('high', 0)} / "
+                                f"中 {cd.get('medium', 0)} / "
+                                f"低 {cd.get('low', 0)})"
+                            )
+                            st.caption(
+                                f"PDF: {ex_result['pdf_pages']} 頁 {ex_result['pdf_chars']} 字 / "
+                                f"Gemini tokens: in {usage.get('input_tokens', '?')} "
+                                f"out {usage.get('output_tokens', '?')}"
+                            )
+
+                            parse_result = {
+                                "ok": True,
+                                "rows": ex_result["rows"],
+                                "format": "gemini-pdf",
+                                "row_count": ex_result["row_count"],
+                                "filename": uploaded_pdf.name,
+                            }
+                            auto_filename = uploaded_pdf.name.rsplit(".", 1)[0]
+                            is_gemini_result = True
+        elif input_mode.startswith("📎"):
             uploaded = st.file_uploader(
                 "拖檔案到這裡, 或點選檔案",
                 type=["csv", "xlsx", "xls"],
@@ -1210,133 +1308,244 @@ with tab_import:
                     f"({parse_result['format'].upper()})"
                 )
 
-                with st.expander(f"📋 前 5 筆預覽 (共 {len(rows)} 筆)"):
+                # ── Gemini 結果 → 顯示複核 UI (data_editor) ──
+                if is_gemini_result:
+                    st.markdown("### Step 1.5 — 人工複核 (預設全勾選)")
+                    st.caption(
+                        "Gemini 抽出的結果可能有誤, 請逐筆確認:\n"
+                        "- ☑️ **選取** 欄: 取消勾選不要匯入的\n"
+                        "- 其他欄位都可直接點擊修改\n"
+                        "- **信心度** = Gemini 自評, low 建議仔細看"
+                    )
+
                     import pandas as _pd
-                    df_preview = _pd.DataFrame(rows).fillna("")
-                    st.dataframe(df_preview.head(5), width="stretch", hide_index=True)
+                    # 把 rows 轉成 DataFrame, 加「選取」欄預設 True, 加「信心度」欄
+                    df_review = _pd.DataFrame(rows).fillna("")
+                    df_review.insert(0, "選取", True)
+                    if "_confidence" in df_review.columns:
+                        df_review.rename(columns={"_confidence": "信心度"}, inplace=True)
+                    else:
+                        df_review["信心度"] = "unknown"
+
+                    # 欄位順序
+                    ordered_cols = [
+                        "選取", "信心度", "標準槽體名稱", "原始槽體代號",
+                        "原文缺失", "檢查類型", "對照項目", "規則",
+                        "比對位置", "判定邏輯", "技師姓名", "序號", "缺失ID", "狀態",
+                    ]
+                    ordered_cols = [c for c in ordered_cols if c in df_review.columns]
+                    df_review = df_review[ordered_cols]
+
+                    # 排序: 低信心度排前面 (讓使用者先注意)
+                    conf_order = {"low": 0, "medium": 1, "high": 2, "unknown": 3}
+                    df_review["_sort"] = df_review["信心度"].map(lambda x: conf_order.get(x, 4))
+                    df_review = df_review.sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
+
+                    # 槽體下拉選單選項
+                    try:
+                        import gemini_extractor as _ge
+                        tank_options = _ge.STANDARD_TANKS
+                        check_options = _ge.CHECK_TYPES
+                    except Exception:
+                        tank_options = []
+                        check_options = []
+
+                    # data_editor 設定
+                    column_config = {
+                        "選取": st.column_config.CheckboxColumn(
+                            "✓", help="勾選 = 匯入", default=True, width="small"
+                        ),
+                        "信心度": st.column_config.SelectboxColumn(
+                            "信心",
+                            options=["high", "medium", "low", "unknown"],
+                            width="small",
+                        ),
+                        "標準槽體名稱": st.column_config.SelectboxColumn(
+                            "標準槽體",
+                            options=tank_options,
+                            required=False,
+                        ) if tank_options else st.column_config.TextColumn("標準槽體"),
+                        "檢查類型": st.column_config.SelectboxColumn(
+                            "檢查類型",
+                            options=check_options,
+                        ) if check_options else st.column_config.TextColumn("檢查類型"),
+                        "原文缺失": st.column_config.TextColumn(
+                            "原文缺失", width="large"
+                        ),
+                        "規則": st.column_config.TextColumn(
+                            "規則", width="medium"
+                        ),
+                        "原始槽體代號": st.column_config.TextColumn("原代號", width="small"),
+                        "對照項目": st.column_config.TextColumn("對照項目", width="small"),
+                        "比對位置": st.column_config.TextColumn("比對位置"),
+                        "判定邏輯": st.column_config.TextColumn("判定邏輯"),
+                        "技師姓名": st.column_config.TextColumn("技師", width="small"),
+                        "序號": st.column_config.TextColumn("序號", width="small"),
+                        "缺失ID": st.column_config.TextColumn("缺失ID", width="small"),
+                        "狀態": st.column_config.SelectboxColumn(
+                            "狀態", options=["", "V", "?"], width="small",
+                        ),
+                    }
+
+                    edited_df = st.data_editor(
+                        df_review,
+                        column_config=column_config,
+                        hide_index=True,
+                        width="stretch",
+                        num_rows="fixed",  # 不讓使用者亂加列
+                        key="imp_gemini_editor",
+                    )
+
+                    # 統計勾選
+                    selected_count = int(edited_df["選取"].sum())
+                    total_count = len(edited_df)
+                    col_sel1, col_sel2, col_sel3 = st.columns(3)
+                    col_sel1.metric("勾選筆數", selected_count)
+                    col_sel2.metric("總筆數", total_count)
+                    col_sel3.metric(
+                        "取消勾選", total_count - selected_count,
+                        delta=f"-{total_count - selected_count}" if selected_count < total_count else None,
+                    )
+
+                    # 把編輯+勾選後的結果回灌成 rows (給後續流程用)
+                    selected_rows = edited_df[edited_df["選取"] == True].drop(columns=["選取"])
+                    if "信心度" in selected_rows.columns:
+                        selected_rows = selected_rows.drop(columns=["信心度"])
+                    rows = selected_rows.to_dict(orient="records")
+
+                    if not rows:
+                        st.warning("⚠️ 沒有勾選任何規則, 請至少勾一筆")
+
+                else:
+                    # 非 Gemini 路徑: 顯示傳統前 5 筆預覽
+                    with st.expander(f"📋 前 5 筆預覽 (共 {len(rows)} 筆)"):
+                        import pandas as _pd
+                        df_preview = _pd.DataFrame(rows).fillna("")
+                        st.dataframe(df_preview.head(5), width="stretch", hide_index=True)
 
                 # ── Step 2: 預覽匯入結果 ──
-                st.markdown("### Step 2 — 預覽匯入結果")
-                preview = rule_importer.preview_import(rows)
+                if rows:
+                    st.markdown("### Step 2 — 預覽匯入結果")
+                    preview = rule_importer.preview_import(rows)
 
-                col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-                col_p1.metric("總筆數", preview["total"])
-                col_p2.metric("可匯入", preview["ok_to_import"])
-                col_p3.metric("涵蓋槽體", len(preview["tanks_in_import"]))
-                col_p4.metric("新槽體", len(preview["new_tanks"]))
+                    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+                    col_p1.metric("總筆數", preview["total"])
+                    col_p2.metric("可匯入", preview["ok_to_import"])
+                    col_p3.metric("涵蓋槽體", len(preview["tanks_in_import"]))
+                    col_p4.metric("新槽體", len(preview["new_tanks"]))
 
-                if preview["new_tanks"]:
-                    st.warning(
-                        f"⚠️ 將新建 {len(preview['new_tanks'])} 個槽體分頁: "
-                        f"{', '.join(preview['new_tanks'])}\n\n"
-                        f"請確認名稱跟 RULE_AUTHORING.md 第 1 章的標準槽體一致。"
-                    )
-
-                if preview["id_conflicts"]:
-                    st.info(
-                        f"ℹ️ {len(preview['id_conflicts'])} 筆缺失ID 跟現有重複, "
-                        f"系統會自動改成 `{next_d}` 起的新編號: "
-                        f"{', '.join(preview['id_conflicts'][:5])}"
-                        f"{'...' if len(preview['id_conflicts']) > 5 else ''}"
-                    )
-
-                if preview["missing_required"]:
-                    with st.expander(f"⚠️ {len(preview['missing_required'])} 筆缺必填欄 (會被跳過)"):
-                        for m in preview["missing_required"][:20]:
-                            st.write(f"- 第 {m['row_idx']} 列: 缺 {', '.join(m['missing'])} (預覽: {m['row_preview']})")
-                        if len(preview["missing_required"]) > 20:
-                            st.caption(f"… 還有 {len(preview['missing_required']) - 20} 筆")
-
-                if preview["tanks_in_import"]:
-                    with st.expander(f"📂 涵蓋槽體清單 ({len(preview['tanks_in_import'])} 個)"):
-                        st.write(", ".join(preview["tanks_in_import"]))
-
-                # ── Step 3: 基本資料 (自動帶入, 可選修改) ──
-                with st.expander("📝 基本資料 (系統已自動帶入, 可選擇修改)", expanded=False):
-                    col_m1, col_m2 = st.columns(2)
-                    today_str = _date.today().strftime("%Y-%m-%d")
-                    with col_m1:
-                        src_filename = st.text_input(
-                            "審查意見檔名 (自動)", value=auto_filename,
-                            key="imp_filename",
-                            help="預設使用上傳檔案的檔名 (扣副檔名)",
-                        )
-                        src_technician = st.text_input(
-                            "技師姓名 (自動)", value=auto_technicians,
-                            key="imp_technician",
-                            help="從上傳資料的「技師姓名」欄自動統計",
-                        )
-                        src_cert = st.text_input("技師證書字號 (可選)", value="",
-                                                  key="imp_cert", placeholder="留空或 (見原文)")
-                    with col_m2:
-                        src_date = st.text_input("查核日期 (預設今天)", value=today_str,
-                                                  key="imp_date")
-                        src_company = st.text_input("簽證事業名稱 (可選)", value="",
-                                                     key="imp_company", placeholder="例: (多家) 或 公司名")
-                        src_note = st.text_input("備註 (可選)", value="",
-                                                  key="imp_note", placeholder="留空使用預設")
-
-                # 沒展開的話 src_xxx 變數不會被設, 在這邊補預設
-                if "imp_filename" not in st.session_state:
-                    src_filename = auto_filename or "未命名審查意見"
-                    src_technician = auto_technicians
-                    src_cert = ""
-                    src_date = _date.today().strftime("%Y-%m-%d")
-                    src_company = ""
-                    src_note = ""
-                else:
-                    src_filename = st.session_state.get("imp_filename", auto_filename) or auto_filename or "未命名審查意見"
-                    src_technician = st.session_state.get("imp_technician", auto_technicians)
-                    src_cert = st.session_state.get("imp_cert", "")
-                    src_date = st.session_state.get("imp_date", _date.today().strftime("%Y-%m-%d"))
-                    src_company = st.session_state.get("imp_company", "")
-                    src_note = st.session_state.get("imp_note", "")
-
-                # ── Step 4: 確認匯入 ──
-                st.markdown("### Step 3 — 確認匯入")
-                st.info(
-                    f"即將匯入 **{preview['ok_to_import']}** 筆 → "
-                    f"來源代號 **{preview['next_source_code']}** ({src_filename}) / "
-                    f"從 **{next_d}** 開始分配 ID"
-                )
-
-                confirm_import = st.checkbox(
-                    "我確定要寫入 規則庫.xlsx (會自動備份舊版)",
-                    key="imp_confirm",
-                )
-
-                if st.button("📥 執行匯入", type="primary",
-                             disabled=not confirm_import,
-                             width="stretch"):
-                    metadata = {
-                        "檔名": src_filename,
-                        "技師姓名": src_technician,
-                        "技師證書字號": src_cert,
-                        "查核日期": src_date,
-                        "簽證事業名稱": src_company,
-                        "備註": src_note or "Streamlit 半自動匯入",
-                    }
-                    with st.spinner("寫入中…"):
-                        result = rule_importer.commit_import(rows, metadata, skip_missing=True)
-
-                    if result.get("ok"):
-                        st.success(
-                            f"✅ 匯入成功! 來源 **{result['source_code']}** / "
-                            f"匯入 **{result['imported_count']}** 筆 / "
-                            f"跳過 **{result['skipped_count']}** 筆"
-                        )
-                        if result.get("new_tanks_created"):
-                            st.info(f"🆕 新建分頁: {', '.join(result['new_tanks_created'])}")
-                        if result.get("backup"):
-                            st.caption(f"備份: `{os.path.basename(result['backup'])}`")
+                    if preview["new_tanks"]:
                         st.warning(
-                            "⚠️ 下一步:\n"
-                            "1. 切到「🔄 規則庫管理」分頁\n"
-                            "2. 按「⬆️ 上傳 xlsx → Sheet」(讓同事看到新規則)\n"
-                            "3. 本機 git push (推到 GitHub, 線上版生效)"
+                            f"⚠️ 將新建 {len(preview['new_tanks'])} 個槽體分頁: "
+                            f"{', '.join(preview['new_tanks'])}\n\n"
+                            f"請確認名稱跟 RULE_AUTHORING.md 第 1 章的標準槽體一致。"
                         )
+
+                    if preview["id_conflicts"]:
+                        st.info(
+                            f"ℹ️ {len(preview['id_conflicts'])} 筆缺失ID 跟現有重複, "
+                            f"系統會自動改成 `{next_d}` 起的新編號: "
+                            f"{', '.join(preview['id_conflicts'][:5])}"
+                            f"{'...' if len(preview['id_conflicts']) > 5 else ''}"
+                        )
+
+                    if preview["missing_required"]:
+                        with st.expander(f"⚠️ {len(preview['missing_required'])} 筆缺必填欄 (會被跳過)"):
+                            for m in preview["missing_required"][:20]:
+                                st.write(f"- 第 {m['row_idx']} 列: 缺 {', '.join(m['missing'])} (預覽: {m['row_preview']})")
+                            if len(preview["missing_required"]) > 20:
+                                st.caption(f"… 還有 {len(preview['missing_required']) - 20} 筆")
+
+                    if preview["tanks_in_import"]:
+                        with st.expander(f"📂 涵蓋槽體清單 ({len(preview['tanks_in_import'])} 個)"):
+                            st.write(", ".join(preview["tanks_in_import"]))
+
+                    # ── Step 3: 基本資料 (自動帶入, 可選修改) ──
+                    with st.expander("📝 基本資料 (系統已自動帶入, 可選擇修改)", expanded=False):
+                        col_m1, col_m2 = st.columns(2)
+                        today_str = _date.today().strftime("%Y-%m-%d")
+                        with col_m1:
+                            src_filename = st.text_input(
+                                "審查意見檔名 (自動)", value=auto_filename,
+                                key="imp_filename",
+                                help="預設使用上傳檔案的檔名 (扣副檔名)",
+                            )
+                            src_technician = st.text_input(
+                                "技師姓名 (自動)", value=auto_technicians,
+                                key="imp_technician",
+                                help="從上傳資料的「技師姓名」欄自動統計",
+                            )
+                            src_cert = st.text_input("技師證書字號 (可選)", value="",
+                                                      key="imp_cert", placeholder="留空或 (見原文)")
+                        with col_m2:
+                            src_date = st.text_input("查核日期 (預設今天)", value=today_str,
+                                                      key="imp_date")
+                            src_company = st.text_input("簽證事業名稱 (可選)", value="",
+                                                         key="imp_company", placeholder="例: (多家) 或 公司名")
+                            src_note = st.text_input("備註 (可選)", value="",
+                                                      key="imp_note", placeholder="留空使用預設")
+
+                    # 沒展開的話 src_xxx 變數不會被設, 在這邊補預設
+                    if "imp_filename" not in st.session_state:
+                        src_filename = auto_filename or "未命名審查意見"
+                        src_technician = auto_technicians
+                        src_cert = ""
+                        src_date = _date.today().strftime("%Y-%m-%d")
+                        src_company = ""
+                        src_note = ""
                     else:
-                        st.error(f"❌ 失敗: {result.get('error', '?')}")
+                        src_filename = st.session_state.get("imp_filename", auto_filename) or auto_filename or "未命名審查意見"
+                        src_technician = st.session_state.get("imp_technician", auto_technicians)
+                        src_cert = st.session_state.get("imp_cert", "")
+                        src_date = st.session_state.get("imp_date", _date.today().strftime("%Y-%m-%d"))
+                        src_company = st.session_state.get("imp_company", "")
+                        src_note = st.session_state.get("imp_note", "")
+
+                    # ── Step 4: 確認匯入 ──
+                    st.markdown("### Step 3 — 確認匯入")
+                    st.info(
+                        f"即將匯入 **{preview['ok_to_import']}** 筆 → "
+                        f"來源代號 **{preview['next_source_code']}** ({src_filename}) / "
+                        f"從 **{next_d}** 開始分配 ID"
+                    )
+
+                    confirm_import = st.checkbox(
+                        "我確定要寫入 規則庫.xlsx (會自動備份舊版)",
+                        key="imp_confirm",
+                    )
+
+                    if st.button("📥 執行匯入", type="primary",
+                                 disabled=not confirm_import,
+                                 width="stretch"):
+                        metadata = {
+                            "檔名": src_filename,
+                            "技師姓名": src_technician,
+                            "技師證書字號": src_cert,
+                            "查核日期": src_date,
+                            "簽證事業名稱": src_company,
+                            "備註": src_note or "Streamlit 半自動匯入",
+                        }
+                        with st.spinner("寫入中…"):
+                            result = rule_importer.commit_import(rows, metadata, skip_missing=True)
+
+                        if result.get("ok"):
+                            st.success(
+                                f"✅ 匯入成功! 來源 **{result['source_code']}** / "
+                                f"匯入 **{result['imported_count']}** 筆 / "
+                                f"跳過 **{result['skipped_count']}** 筆"
+                            )
+                            if result.get("new_tanks_created"):
+                                st.info(f"🆕 新建分頁: {', '.join(result['new_tanks_created'])}")
+                            if result.get("backup"):
+                                st.caption(f"備份: `{os.path.basename(result['backup'])}`")
+                            st.warning(
+                                "⚠️ 下一步:\n"
+                                "1. 切到「🔄 規則庫管理」分頁\n"
+                                "2. 按「⬆️ 上傳 xlsx → Sheet」(讓同事看到新規則)\n"
+                                "3. 本機 git push (推到 GitHub, 線上版生效)"
+                            )
+                        else:
+                            st.error(f"❌ 失敗: {result.get('error', '?')}")
 
 with tab3:
     st.subheader("水措審查系統 v3 — 使用說明")

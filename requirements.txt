@@ -9,3 +9,5 @@ Pillow>=10.0.0
 # 選用 (僅當啟用 Google Sheets 同步時需要)
 gspread>=6.0.0
 google-auth>=2.20.0
+# 選用 (僅當啟用 Gemini PDF 自動抽取時需要)
+google-generativeai>=0.8.0
