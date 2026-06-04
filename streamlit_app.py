@@ -394,6 +394,24 @@ with tab1:
     if uploaded is not None:
         st.success(f"已上傳: **{uploaded.name}** ({uploaded.size // 1024} KB)")
 
+        # 章節擷取 toggle — 只處理「參、水污染防治措施資料」段
+        col_opt1, col_opt2 = st.columns([2, 3])
+        with col_opt1:
+            only_chapter_iii = st.checkbox(
+                "✂️ 只處理「參、水污染防治措施資料」章節",
+                value=True,
+                key="_only_ch3",
+                help="自動偵測該章節, 只抽該段內容 (省 token + 加速)。"
+                     "找不到章節會自動 fallback 用全文。",
+            )
+        with col_opt2:
+            if only_chapter_iii:
+                st.caption(
+                    "✅ 系統會先掃 PDF 找「參、」章節, 切出該段給 OCR/Gemini, 通常加速 5-10 倍"
+                )
+            else:
+                st.caption("⚠️ 處理整本 PDF (慢、貴, 但完整)")
+
         # 事業類別選擇 (供智能審查使用) - 提前到按鈕之前讓使用者一次設定
         business_type = st.selectbox(
             "事業類別 (用於檢查申報項目是否完整)",
@@ -409,6 +427,28 @@ with tab1:
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
                 tf.write(pdf_bytes)
                 tmp_path = tf.name
+
+            # 若啟用章節擷取, 先找參章位置 (給後續 step 參考)
+            chapter_info = None
+            if only_chapter_iii:
+                try:
+                    import pdf_chapter_extractor
+                    chapter_info = pdf_chapter_extractor.find_chapter_iii_pages(pdf_bytes)
+                    if chapter_info.get("ok") and chapter_info.get("found"):
+                        st.info(
+                            f"✂️ 找到「參、水污染防治措施資料」: "
+                            f"頁 {chapter_info['start_page']}~{chapter_info['end_page']} "
+                            f"(全本 {chapter_info['total_pages']} 頁, "
+                            f"節省 {100 - (chapter_info['end_page'] - chapter_info['start_page'] + 1) * 100 // chapter_info['total_pages']}%)"
+                        )
+                    elif chapter_info.get("ok"):
+                        st.warning("⚠️ 找不到「參、水污染防治措施資料」章節, 改用全文")
+                        chapter_info = None
+                except Exception as _e:
+                    st.caption(f"章節定位失敗 ({_e}), 改用全文")
+                    chapter_info = None
+            # 把章節範圍存到 session_state, 給其他模組讀
+            st.session_state["_chapter_iii_info"] = chapter_info
 
             # 進度條 + 剩餘時間估算
             import time as _time
@@ -542,6 +582,94 @@ with tab1:
                     pass
 
     # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
+    # ── 補充: 圖片局部判讀 (Gemini Vision) ──
+    with st.expander("📷 補充: 上傳圖片做局部判讀 (Gemini Vision)", expanded=False):
+        st.caption(
+            "用途: 上傳申請文件的截圖 (流向圖 / 水量平衡 / 數據表 / 設計尺寸) 讓 Gemini 判讀。"
+            " 適用於 PDF 抽取不夠完整、想針對特定區塊深入分析的時候。"
+        )
+        try:
+            import gemini_vision as _gv
+            _gv_ok = True
+        except Exception as _e:
+            st.error(f"無法載入 gemini_vision: {_e}")
+            _gv_ok = False
+
+        if _gv_ok:
+            # 認證狀態
+            try:
+                import gemini_extractor as _ge
+                _gs = _ge.check_gemini_status()
+            except Exception:
+                _gs = {"ok": False, "message": "?"}
+
+            if not _gs.get("ok"):
+                st.warning(f"⚠️ {_gs.get('message')} (請見『匯入新規則』分頁設定)")
+            else:
+                imgs = st.file_uploader(
+                    "拖入 1~N 張圖片 (PNG / JPG / WEBP)",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    accept_multiple_files=True,
+                    key="_review_img_uploader",
+                )
+                focus_hint = st.text_input(
+                    "提示 (可選, 告訴 Gemini 該注意什麼)",
+                    placeholder="例: 請特別注意流向是否標示反洗水來源",
+                    key="_review_img_hint",
+                )
+
+                if imgs:
+                    cols_thumb = st.columns(min(len(imgs), 4))
+                    for i, img in enumerate(imgs):
+                        with cols_thumb[i % 4]:
+                            st.image(img, caption=img.name, width=150)
+
+                    if st.button("🔍 開始判讀", key="_btn_interpret_images",
+                                 type="primary"):
+                        with st.spinner(f"Gemini Vision 判讀 {len(imgs)} 張圖片…"):
+                            img_bytes_list = [img.getvalue() for img in imgs]
+                            _gr = _gv.process_images(
+                                img_bytes_list,
+                                mode="interpret_diagram",
+                                focus_hint=focus_hint,
+                            )
+                        if _gr.get("ok"):
+                            result = _gr.get("result", {})
+                            st.success(
+                                f"✅ 判讀完成 ({_gr['image_count']} 張) · "
+                                f"信心度 {result.get('confidence', '?')} · "
+                                f"tokens in {_gr['gemini_usage'].get('input_tokens')} "
+                                f"out {_gr['gemini_usage'].get('output_tokens')}"
+                            )
+                            st.markdown(f"**圖表類型**: {result.get('diagram_type', '(未判斷)')}")
+
+                            if result.get("observations"):
+                                st.markdown("**🔍 關鍵發現**")
+                                for obs in result["observations"]:
+                                    st.markdown(f"- {obs}")
+
+                            if result.get("concerns"):
+                                st.markdown("**⚠️ 可能不合理之處**")
+                                for c in result["concerns"]:
+                                    st.markdown(f"- {c}")
+
+                            if result.get("units"):
+                                st.markdown(f"**📦 槽體資料 ({len(result['units'])} 個)**")
+                                import pandas as _pd
+                                df_u = _pd.DataFrame(result["units"]).astype(str)
+                                st.dataframe(df_u, use_container_width=True, hide_index=True)
+
+                            if result.get("flows"):
+                                st.markdown(f"**🌊 流向資料 ({len(result['flows'])} 條)**")
+                                import pandas as _pd
+                                df_f = _pd.DataFrame(result["flows"]).astype(str)
+                                st.dataframe(df_f, use_container_width=True, hide_index=True)
+
+                            with st.expander("Raw text (圖片裡看得到的所有文字)"):
+                                st.text(result.get("raw_text", ""))
+                        else:
+                            st.error(f"❌ 失敗 ({_gr.get('stage')}): {_gr.get('error')}")
+
     if st.session_state.get("_app_data"):
         app_data = st.session_state["_app_data"]
         sections = st.session_state["_sections"]
@@ -1197,7 +1325,12 @@ with tab_import:
 
         input_mode = st.radio(
             "選擇輸入方式",
-            ["🤖 上傳 PDF (Gemini 自動抽)", "📎 上傳檔案 (CSV / xlsx)", "📝 貼上文字"],
+            [
+                "🤖 上傳 PDF (Gemini 自動抽)",
+                "📷 上傳圖片 (Gemini Vision 抽規則)",
+                "📎 上傳檔案 (CSV / xlsx)",
+                "📝 貼上文字",
+            ],
             key="imp_input_mode",
             horizontal=True,
         )
@@ -1333,6 +1466,93 @@ with tab_import:
                                 "filename": uploaded_pdf.name,
                             }
                             auto_filename = uploaded_pdf.name.rsplit(".", 1)[0]
+                            is_gemini_result = True
+        elif input_mode.startswith("📷"):
+            # Gemini Vision 圖片模式: 把審查意見書的截圖 → 結構化規則
+            try:
+                import gemini_vision
+                import gemini_extractor
+                vision_ok = True
+            except Exception as _ve:
+                st.error(f"無法載入 gemini_vision: {_ve}")
+                vision_ok = False
+
+            if vision_ok:
+                _vstat = gemini_extractor.check_gemini_status()
+                if _vstat["ok"]:
+                    st.success(
+                        f"✅ Gemini Vision 已啟用 (key: `{_vstat['key_preview']}`)"
+                    )
+                else:
+                    st.warning(f"⚠️ {_vstat['message']}")
+
+                uploaded_imgs = st.file_uploader(
+                    "拖入 1~N 張審查意見書截圖 (PNG / JPG / WEBP)",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    accept_multiple_files=True,
+                    key="imp_img_uploader",
+                    disabled=not _vstat["ok"],
+                    help="可一次上傳多張, Gemini 會綜合判斷"
+                )
+
+                if "vision_extract_result" not in st.session_state:
+                    st.session_state["vision_extract_result"] = None
+                    st.session_state["vision_img_key"] = ""
+
+                if uploaded_imgs:
+                    # session key 用「檔名 + size 列表」(換不同圖片組就重抽)
+                    img_key = "|".join(f"{i.name}_{i.size}" for i in uploaded_imgs)
+                    last_key = st.session_state.get("vision_img_key", "")
+
+                    # 縮圖
+                    cols_t = st.columns(min(len(uploaded_imgs), 4))
+                    for i, img in enumerate(uploaded_imgs):
+                        with cols_t[i % 4]:
+                            st.image(img, caption=img.name, width=130)
+
+                    btn_label = "🔄 重抽" if last_key == img_key else f"📷 開始抽取 ({len(uploaded_imgs)} 張)"
+                    if st.button(btn_label, type="primary",
+                                 disabled=not _vstat["ok"], width="stretch",
+                                 key="imp_vision_btn"):
+                        with st.spinner(f"Gemini Vision 處理 {len(uploaded_imgs)} 張…"):
+                            img_bytes_list = [img.getvalue() for img in uploaded_imgs]
+                            _vr = gemini_vision.process_images(
+                                img_bytes_list, mode="extract_rules"
+                            )
+                        st.session_state["vision_extract_result"] = _vr
+                        st.session_state["vision_img_key"] = img_key
+
+                    ex_result = st.session_state.get("vision_extract_result")
+                    if ex_result and st.session_state.get("vision_img_key") == img_key:
+                        if not ex_result.get("ok"):
+                            st.error(
+                                f"❌ 失敗 ({ex_result.get('stage')}): {ex_result.get('error')}"
+                            )
+                            if ex_result.get("raw_response"):
+                                with st.expander("Gemini raw response (debug)"):
+                                    st.code(ex_result["raw_response"])
+                        else:
+                            cd = ex_result.get("confidence_dist", {})
+                            usage = ex_result.get("gemini_usage", {})
+                            st.success(
+                                f"✅ Vision 抽出 **{ex_result['row_count']}** 筆 "
+                                f"(高 {cd.get('high', 0)} / 中 {cd.get('medium', 0)} / 低 {cd.get('low', 0)})"
+                            )
+                            st.caption(
+                                f"圖片: {ex_result['image_count']} 張 / "
+                                f"tokens in {usage.get('input_tokens', '?')} "
+                                f"out {usage.get('output_tokens', '?')}"
+                            )
+
+                            parse_result = {
+                                "ok": True,
+                                "rows": ex_result["rows"],
+                                "format": "gemini-vision",
+                                "row_count": ex_result["row_count"],
+                            }
+                            # 用第一張圖的名稱當預設檔名
+                            first_img_name = uploaded_imgs[0].name
+                            auto_filename = f"圖片_{first_img_name.rsplit('.', 1)[0]}"
                             is_gemini_result = True
         elif input_mode.startswith("📎"):
             uploaded = st.file_uploader(
