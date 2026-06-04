@@ -374,10 +374,25 @@ with st.sidebar:
                 st.caption(f"**{mod}**: {err[:150]}")
 
 # ───────── 全頁面 busy 橫幅 (置頂,不論在哪個 tab 都會看到) ─────────
+# Streamlit 的執行模型: 每次 widget 互動都會 rerun 整個 script;
+# 若上一次審查中按了其他 widget (如 file_uploader 換檔), 那次審查的 thread
+# 會被中斷, try/finally 沒走完 → _busy 卡在 True。
+# 對策: 用 _busy_run_id 標記「這次 rerun 是審查本身的 rerun 嗎?」
+#   - 進審查時, 把當下 timestamp 寫到 _busy_run_id
+#   - 每次 rerun 進來, 若 _busy=True 但 _busy_run_id 是 N 秒前的舊值, 視為中斷
+import time as _time_busy
+_now_ts = _time_busy.time()
 if st.session_state.get("_busy", False):
-    st.error(
-        "⏳ **系統忙碌中,請勿關閉/重整頁面,避免操作其他按鈕** — 可能會中斷處理"
-    )
+    _bid = st.session_state.get("_busy_run_id", 0)
+    # 5 分鐘 (300 秒) 內視為「正在跑」, 超過就當作中斷殘留
+    if _now_ts - _bid > 300:
+        st.session_state["_busy"] = False
+        st.session_state.pop("_busy_run_id", None)
+        st.warning("⚠️ 偵測到上次審查被中途中斷 (可能是頁面操作觸發 rerun),已解鎖。請重新點「開始完整審查」。")
+    else:
+        st.error(
+            "⏳ **系統忙碌中,請勿關閉/重整頁面/換上傳檔案/點其他按鈕** — 可能會中斷處理"
+        )
 
 tab1, tab2, tab_sync, tab_import, tab3 = st.tabs(["🚀 開始審查", "📊 規則庫瀏覽", "🔄 規則庫管理", "📥 匯入新規則", "📖 使用說明"])
 
@@ -394,7 +409,20 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
-    uploaded = st.file_uploader("選擇 PDF", type=["pdf"])
+    # busy 時鎖 file_uploader — 避免使用者中途換檔觸發 rerun 把審查 thread 打斷
+    # (Streamlit 每次 widget 互動都會從頭重跑 script, file_uploader 重新選檔
+    #  會 rerun, 把正在跑的審查中斷, _busy 因為 try/finally 沒走完而卡在 True)
+    _busy_now = st.session_state.get("_busy", False)
+    if _busy_now:
+        # 完全不顯示 uploader, 改顯示固定的「正在審查」狀態 + 已上傳檔名
+        _prev_name = st.session_state.get("_pdf_filename", "(未知)")
+        st.info(
+            f"🔒 **審查進行中** — 已鎖定上傳功能,避免中斷處理\n\n"
+            f"目前正在審查的檔案: **{_prev_name}**"
+        )
+        uploaded = None  # 走「顯示區」路線, 不會觸發底下的 button 邏輯
+    else:
+        uploaded = st.file_uploader("選擇 PDF", type=["pdf"])
 
     # 一鍵跑完整流程: 抽取 + OCR + 智能審查
     if uploaded is not None:
@@ -407,6 +435,7 @@ with tab1:
                 "✂️ 只處理「參、水污染防治措施資料」章節",
                 value=True,
                 key="_only_ch3",
+                disabled=_busy_now,
                 help="自動偵測該章節, 只抽該段內容 (省 token + 加速)。"
                      "找不到章節會自動 fallback 用全文。",
             )
@@ -423,6 +452,7 @@ with tab1:
             "事業類別 (用於檢查申報項目是否完整)",
             ["(不檢查)"] + list(BUSINESS_TYPES.keys()),
             key="_business_type",
+            disabled=_busy_now,
             help="選了之後智能審查會檢查該事業類別應申報的項目是否漏項",
         )
 
@@ -437,6 +467,8 @@ with tab1:
                      help="一次跑完: 抽取單元 → 章節定位 → OCR 流向圖 → 智能審查"):
             # 標記正在跑審查 (鎖其他主要按鈕)
             st.session_state["_busy"] = True
+            import time as _t_lock
+            st.session_state["_busy_run_id"] = _t_lock.time()
             # 暫存 PDF 到 disk 供多步驟使用
             pdf_bytes = uploaded.read()
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
@@ -602,6 +634,7 @@ with tab1:
                     pass
                 # 解鎖 UI
                 st.session_state["_busy"] = False
+                st.session_state.pop("_busy_run_id", None)
 
     # ───────── 顯示區 (永遠基於 session_state, 不被 button rerun 影響) ─────────
     # ── 水量平衡示意圖解析 (Gemini Vision 抽結構化流向) ──
