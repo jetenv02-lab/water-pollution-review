@@ -282,18 +282,44 @@ def parse_quality_page(text):
     if m_first:
         current_unit = m_first.group(1).strip()
 
+    pending_unit_for_next = None  # 上一個 block 結尾出現的「單元序號」, 留給下個 block
     for blk in parts[1:]:
-        # 在 blk 內找新的「單元序號：T0X-XX」如果有 → 更新 current_unit
-        m_unit = UNIT_SEQ_PATTERN.search(blk)
-        if m_unit:
-            current_unit = m_unit.group(1).strip()
-        if not current_unit:
-            continue
-        # 找該 block 的 進流/出流編號
+        # 找該 block 的 進流/出流編號 (優先, 因為比「單元序號」更準確)
         m_in = INFL_CODE_PATTERN.search(blk)
         m_out = EFFL_CODE_PATTERN.search(blk)
         infl_code = m_in.group(1) if m_in else None
         effl_code = m_out.group(1) if (m_out and m_out.group(1)) else None
+
+        # 在 blk 內找新的「單元序號：T0X-XX」
+        m_unit = UNIT_SEQ_PATTERN.search(blk)
+        unit_in_blk = m_unit.group(1).strip() if m_unit else None
+
+        # 從進流編號反推真正的歸屬單元 (例: WTB01-01-6 → T01-01)
+        infl_implied_unit = None
+        if infl_code:
+            mm = re.match(r"^WT[AB](\d{2})[-－](\d{2})", infl_code)
+            if mm:
+                infl_implied_unit = f"T{mm.group(1)}-{mm.group(2)}"
+
+        # 決定 current_unit 優先序:
+        # 1. 進流編號隱含的單元 (最準, 直接綁定)
+        # 2. 上個 block 留下來的 pending_unit_for_next
+        # 3. block 內出現的 單元序號
+        # 4. 沿用之前的 current_unit
+        new_pending = None
+        if infl_implied_unit:
+            current_unit = infl_implied_unit
+            # 若 block 內也有 unit_in_blk 但跟進流編號不一致, 留給下個 block
+            if unit_in_blk and unit_in_blk != infl_implied_unit:
+                new_pending = unit_in_blk
+        elif pending_unit_for_next:
+            current_unit = pending_unit_for_next
+        elif unit_in_blk:
+            current_unit = unit_in_blk
+
+        pending_unit_for_next = new_pending
+        if not current_unit:
+            continue
 
         # 抽水質列
         infl_q, effl_q = {}, {}
