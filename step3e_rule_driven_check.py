@@ -44,9 +44,17 @@ def load_rules_by_tank():
     """讀 rules_extracted.csv → { 標準槽體名稱: [規則 dict, ...] }。
 
     跳過「狀態 = ?」(待討論) 的規則。
+    同義字: 「對照項目」會多存一個 normalized 版本到 `對照項目_標準` 欄。
     """
     if not os.path.exists(RULES_CSV):
         return {}
+    # 嘗試載入同義字 (失敗不致命, 退化成 identity)
+    try:
+        import step3f_synonyms
+        synonym_normalize = step3f_synonyms.normalize
+    except Exception:
+        synonym_normalize = lambda x: x
+
     rules_by_tank = defaultdict(list)
     skipped = 0
     with open(RULES_CSV, "r", encoding="utf-8-sig", newline="") as f:
@@ -58,13 +66,15 @@ def load_rules_by_tank():
                 skipped += 1
                 continue
             tank = (row.get("標準槽體名稱") or "未分類").strip()
+            raw_compare = row.get("對照項目", "")
             # 把 CSV 欄位名稱對應到原本 xlsx 的欄位名稱
             rule = {
                 "缺失ID": row.get("缺失ID", ""),
                 "來源": row.get("來源", ""),
                 "原文缺失": row.get("原文缺失", ""),
                 "檢查類型": row.get("檢查類型", ""),
-                "對照項目": row.get("對照項目", ""),
+                "對照項目": raw_compare,
+                "對照項目_標準": synonym_normalize(raw_compare),  # 同義字展開後的標準詞
                 "規則": row.get("規則", ""),
                 "比對位置": row.get("比對位置", ""),
                 "判定邏輯": row.get("判定邏輯", ""),

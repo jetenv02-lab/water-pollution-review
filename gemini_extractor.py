@@ -151,7 +151,30 @@ def _extract_pdf_text(pdf_bytes):
 # Gemini Prompt
 # ──────────────────────────────────────────────────
 
-EXTRACTION_PROMPT = """你是台灣環工技師, 專門審查「水污染防治措施」申請文件。
+def _build_synonyms_hint():
+    """從 step3f_synonyms 組「同義字提示」給 Gemini, 確保「對照項目」用標準詞。"""
+    try:
+        import step3f_synonyms
+        all_syn = step3f_synonyms.get_all_synonyms()
+        # 只給有別名的, 太長會吃 token
+        lines = []
+        for std, aliases in all_syn.items():
+            if aliases:
+                lines.append(f"  {std} = {' / '.join(aliases)}")
+        if not lines:
+            return ""
+        return (
+            "\n【同義字 — 「對照項目」請用標準詞 (左邊), 不要用右邊的別名】\n"
+            + "\n".join(lines) + "\n"
+        )
+    except Exception:
+        return ""
+
+
+def _build_extraction_prompt(pdf_text):
+    """動態組裝抽取 prompt (含同義字提示)。"""
+    synonyms_hint = _build_synonyms_hint()
+    return f"""你是台灣環工技師, 專門審查「水污染防治措施」申請文件。
 
 我會給你一份「審查意見書」的文字內容。請你抽取出每一筆技師指出的缺失,
 整理成結構化資料。
@@ -159,19 +182,19 @@ EXTRACTION_PROMPT = """你是台灣環工技師, 專門審查「水污染防治�
 【輸出格式】
 回傳一個 JSON array, 每個元素代表一筆缺失:
 
-{
+{{
   "技師姓名": "從原文抽出, 例 方天志",
   "序號": "技師標的序號, 例 序1 方天志技師 (1)",
   "原文缺失": "技師原文 (盡量逐字, 不要改寫). 例: (1)頁次:7/34, 廢(污)水產生與水污染防治措施流向示意圖, 未標示T01-05活性碳吸附裝置反洗水來源。",
-  "檢查類型": "從下列選一個: %s",
-  "對照項目": "簡短說在查什麼, 例: 反洗水來源 / pH / 攪拌轉速 / 液位計",
+  "檢查類型": "從下列選一個: {" / ".join(CHECK_TYPES)}",
+  "對照項目": "簡短說在查什麼, 例: 反洗水來源 / pH / 攪拌轉速 / 液位計. 請優先用標準詞 (見下方同義字表)",
   "規則": "白話描述, 例: 流向示意圖需標示反洗水來源",
   "比對位置": "在申請文件的哪段查, 例: 廢(污)水產生與水污染防治措施流向示意圖",
   "判定邏輯": "什麼條件下標記什麼, 例: 若 設備具反洗功能 且 未標示來源 → 標記:未標示來源",
-  "標準槽體名稱": "從下列選一個: %s. 若涉及多槽體, 各寫一筆. 若是文件層級的缺失, 用 (文件類) ; 若是現場機具設施類, 用 (現場設備類).",
+  "標準槽體名稱": "從下列選一個: {" / ".join(STANDARD_TANKS)}. 若涉及多槽體, 各寫一筆. 若是文件層級的缺失, 用 (文件類) ; 若是現場機具設施類, 用 (現場設備類).",
   "原始槽體代號": "原文寫的槽體序號, 例: T01-05",
   "confidence": "你對這筆抽取的信心: high (清楚明確) / medium (有點不確定) / low (內容模糊)"
-}
+}}
 
 【重要規則】
 1. 每筆缺失對應一個槽體。若原文涉及多個槽體 (如 T01-09、T01-10、T01-11), 拆成多筆。
@@ -182,17 +205,14 @@ EXTRACTION_PROMPT = """你是台灣環工技師, 專門審查「水污染防治�
    - medium: 槽體可推測但不百分百確定
    - low: 內容模糊或跨多個系統
 5. 若一份審查意見有多位技師, 每筆要正確標出技師姓名。
-
+6. 「對照項目」優先用標準詞 (見下方同義字表的左欄), 別用別名。
+{synonyms_hint}
 【審查意見全文】
-%s
+{pdf_text}
 
 【任務】
 請抽取所有缺失, 回傳 JSON array (不要加 ```json 標記, 直接給 JSON):
-""" % (
-    " / ".join(CHECK_TYPES),
-    " / ".join(STANDARD_TANKS),
-    "%s",
-)
+"""
 
 
 # ──────────────────────────────────────────────────
@@ -210,7 +230,7 @@ def _call_gemini(pdf_text, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(GEMINI_MODEL)
 
-        prompt = EXTRACTION_PROMPT % pdf_text
+        prompt = _build_extraction_prompt(pdf_text)
 
         response = model.generate_content(
             prompt,
@@ -296,17 +316,27 @@ def extract_rules_from_pdf(pdf_bytes, filename="(uploaded.pdf)"):
 
     rules = gemini_result["rules"]
 
+    # 載入同義字 normalizer (給對照項目用)
+    try:
+        import step3f_synonyms
+        synonym_normalize = step3f_synonyms.normalize
+    except Exception:
+        synonym_normalize = lambda x: x
+
     # Step 4: 後處理 — 對應到 rule_importer 期望的欄位
     rows = []
     confidence_dist = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
     for r in rules:
         if not isinstance(r, dict):
             continue
+        # 對照項目: Gemini 給的詞 → normalize 成標準詞 (萬一沒聽話用了別名)
+        compare_raw = r.get("對照項目", "").strip()
+        compare_std = synonym_normalize(compare_raw) if compare_raw else ""
         row = {
             "缺失ID": "",  # 留空, 系統會自動分配
             "原文缺失": r.get("原文缺失", "").strip(),
             "檢查類型": r.get("檢查類型", "").strip(),
-            "對照項目": r.get("對照項目", "").strip(),
+            "對照項目": compare_std,  # 直接寫成標準詞
             "規則": r.get("規則", "").strip(),
             "比對位置": r.get("比對位置", "").strip(),
             "判定邏輯": r.get("判定邏輯", "").strip(),
