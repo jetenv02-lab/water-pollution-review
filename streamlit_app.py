@@ -1474,6 +1474,81 @@ with tab1:
                         return f" · Q = {diag} CMD (示意圖解析)"
                 return ""
 
+            # 預先算: 每個水質項目的整體削減率 (給出流表用)
+            # 跟每個項目「Σ所有進流質量」(給進流表算佔比用)
+            _to_float = lambda v: (float(v) if v not in (None, "", "-") else None)
+
+            def _mass_of(stream_dict, item_name):
+                v = stream_dict.get(item_name) if isinstance(stream_dict, dict) else None
+                if isinstance(v, dict):
+                    try:
+                        return float(v.get("質量")) if v.get("質量") not in (None, "") else None
+                    except (TypeError, ValueError):
+                        return None
+                return None
+
+            # 蒐集所有水質項目 (兩邊聯集)
+            _all_items_in_unit = set()
+            for _s in list((unit.get("influent") or {}).values()) + list((unit.get("effluent") or {}).values()):
+                if isinstance(_s, dict):
+                    _all_items_in_unit.update(_s.keys())
+
+            # Σ進流質量 / Σ出流質量 → 削減率
+            item_total_in = {}
+            item_total_out = {}
+            for item in _all_items_in_unit:
+                tin = 0.0
+                tout = 0.0
+                has_in = False
+                has_out = False
+                for s in (unit.get("influent") or {}).values():
+                    m = _mass_of(s, item)
+                    if m is not None:
+                        tin += m
+                        has_in = True
+                for s in (unit.get("effluent") or {}).values():
+                    m = _mass_of(s, item)
+                    if m is not None:
+                        tout += m
+                        has_out = True
+                if has_in:
+                    item_total_in[item] = tin
+                if has_out:
+                    item_total_out[item] = tout
+
+            def _removal_pct_of(item):
+                """該項目的整體削減率 % (Σ進 → Σ出), 沒得算回 None。"""
+                tin = item_total_in.get(item)
+                tout = item_total_out.get(item)
+                if tin is None or tout is None or tin <= 0:
+                    return None
+                return (tin - tout) / tin * 100
+
+            def _share_pct(stream_item_mass, item):
+                """這條流的某項目質量佔該項目總進流質量的 %。"""
+                tin = item_total_in.get(item)
+                if tin is None or tin <= 0 or stream_item_mass is None:
+                    return None
+                try:
+                    m = float(stream_item_mass) if stream_item_mass not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
+                if m is None:
+                    return None
+                return m / tin * 100
+
+            def _fmt_removal(pct):
+                """格式化削減率, 標記異常。"""
+                if pct is None:
+                    return "—"
+                if pct < -10:
+                    return f"⚠️ {pct:+.1f}%"  # 出流 > 進流
+                if pct > 99.5:
+                    return f"⚠️ {pct:.1f}%"   # 異常高
+                if pct < 0:
+                    return f"{pct:+.1f}%"
+                return f"{pct:.1f}%"
+
             if unit.get("influent"):
                 _hint = " — Q 自水質表反推 (質量÷濃度×1000)"
                 st.markdown(f"**進流水質** ({len(unit['influent'])} 流向){_hint}")
@@ -1491,9 +1566,27 @@ with tab1:
                                 f"算出 {rev['q_min']:.2f} ~ {rev['q_max']:.2f} CMD "
                                 f"(中位 {rev['q_cmd']:.2f}, 差異 {rev['spread_pct']:.1f}%)"
                             )
-                        q_rows = [{"水質項目": str(k),
-                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
-                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
+                        # 進流欄位: 多一欄「佔進流總質量 %」+ 「整體削減率」
+                        # 佔比: 這條流的這項目質量 ÷ 全部進流加總
+                        # 削減率: 該項目整體削減率 (Σ進→Σ出)
+                        q_rows = []
+                        for k, v in qdata.items():
+                            if not isinstance(v, dict):
+                                row = {"水質項目": str(k), "濃度": "", "質量": "",
+                                       "佔進流%": "—", "整體削減率": "—"}
+                            else:
+                                mass_str = str(v.get("質量", ""))
+                                share = _share_pct(v.get("質量"), k)
+                                share_txt = f"{share:.1f}%" if share is not None else "—"
+                                removal = _removal_pct_of(k)
+                                row = {
+                                    "水質項目": str(k),
+                                    "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                                    "質量": mass_str,
+                                    "佔進流%": share_txt,
+                                    "整體削減率": _fmt_removal(removal),
+                                }
+                            q_rows.append(row)
                         st.dataframe(q_rows, width="stretch", hide_index=True)
 
             if unit.get("effluent"):
@@ -1510,9 +1603,21 @@ with tab1:
                                 f"算出 {rev['q_min']:.2f} ~ {rev['q_max']:.2f} CMD "
                                 f"(中位 {rev['q_cmd']:.2f}, 差異 {rev['spread_pct']:.1f}%)"
                             )
-                        q_rows = [{"水質項目": str(k),
-                                   "濃度": str(v.get("濃度", v.get("範圍", ""))),
-                                   "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
+                        # 出流欄位: 多一欄「整體削減率 %」
+                        q_rows = []
+                        for k, v in qdata.items():
+                            if not isinstance(v, dict):
+                                row = {"水質項目": str(k), "濃度": "", "質量": "",
+                                       "整體削減率": "—"}
+                            else:
+                                removal = _removal_pct_of(k)
+                                row = {
+                                    "水質項目": str(k),
+                                    "濃度": str(v.get("濃度", v.get("範圍", ""))),
+                                    "質量": str(v.get("質量", "")),
+                                    "整體削減率": _fmt_removal(removal),
+                                }
+                            q_rows.append(row)
                         st.dataframe(q_rows, width="stretch", hide_index=True)
 
             # 削減率分項表 (本單元的所有水質項目)
