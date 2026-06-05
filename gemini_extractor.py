@@ -18,14 +18,16 @@ import re
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
-# 標準槽體清單 (跟 RULE_AUTHORING.md 一致, 不要加 _說明 等 meta 分頁)
-STANDARD_TANKS = [
+# Fallback 標準槽體清單 — 規則庫.xlsx 的 _槽體學理 分頁讀失敗時使用。
+# 已刪除空殼分頁「文件類」「現場設備類」, 但保留 (文件類) (現場設備類) (跨槽體規則)。
+_STANDARD_TANKS_FALLBACK = [
     # 預處理 / 前處理
     "廢水收集池", "廢水調整池", "調勻池", "暫存槽", "中和池",
     # 化學處理
-    "pH調整槽", "快混槽", "慢混池", "沉澱池",
+    "pH調整槽", "pH調整暨快混池", "pH調整池暨快混池",
+    "快混槽", "慢混池", "沉澱池", "沉降池", "浮除槽",
     # 生物處理
-    "曝氣槽", "氧化池",
+    "曝氣槽", "氧化池", "厭氧池",
     # 高級處理
     "活性碳吸附塔", "活性碳吸附裝置", "砂濾塔", "離子交換樹脂塔",
     # 污泥處理
@@ -34,9 +36,36 @@ STANDARD_TANKS = [
     "放流池", "貯留槽",
     # 批次
     "批次反應槽",
-    # 其他 / 文件類
-    "(文件類)", "(現場設備類)", "文件類", "現場設備類",
+    # 跨槽體規則 (帶括號代表「全域」, 非具體單元)
+    "(文件類)", "(現場設備類)",
 ]
+
+
+def _load_standard_tanks():
+    """從 規則庫.xlsx 的 _槽體學理 分頁動態載入標準槽體清單,
+    確保 Gemini 抽出來的標準槽體名稱跟規則庫一致。
+
+    讀失敗就用 _STANDARD_TANKS_FALLBACK (寫死的清單)。
+    """
+    try:
+        import tank_chemistry
+        rules = tank_chemistry.load_rules()
+        if rules:
+            tanks = list(rules.keys())
+            # 補上「跨槽體規則」(這兩個不在 _槽體學理 裡, 但 Gemini 還是會用)
+            for extra in ("(文件類)", "(現場設備類)"):
+                if extra not in tanks:
+                    tanks.append(extra)
+            return tanks
+    except Exception:
+        pass
+    return list(_STANDARD_TANKS_FALLBACK)
+
+
+# 注意: 這是「函式呼叫」而非「常數」, 確保每次都拿到最新的規則表內容。
+# 若想避免重複 I/O, 可改為「程式啟動時呼叫一次」, 但因為規則表協作會更新,
+# 建議保留動態載入。
+STANDARD_TANKS = _load_standard_tanks()
 
 CHECK_TYPES = [
     "設計參數", "機具設施", "質量平衡", "操作條件",

@@ -2475,15 +2475,32 @@ with tab_import:
                                 f"匯入 **{result['imported_count']}** 筆 / "
                                 f"跳過 **{result['skipped_count']}** 筆"
                             )
-                            if result.get("new_tanks_created"):
-                                st.info(f"🆕 新建分頁: {', '.join(result['new_tanks_created'])}")
+                            new_tanks = result.get("new_tanks_created") or []
+                            if new_tanks:
+                                st.info(f"🆕 新建分頁: {', '.join(new_tanks)}")
+                                # ★ 順手提醒: 新槽體還沒有學理規則, 建議補
+                                try:
+                                    import tank_chemistry
+                                    chem_rules = tank_chemistry.load_rules()
+                                    missing_chem = [t for t in new_tanks if t not in chem_rules
+                                                    and not t.startswith("(")]
+                                    if missing_chem:
+                                        st.warning(
+                                            f"⚠️ **新槽體缺學理規則** — "
+                                            f"`{', '.join(missing_chem)}` 還沒有對應的「應變動/不應變動」設定。\n\n"
+                                            f"建議到雲端協作表 **`_槽體學理`** 分頁補上, "
+                                            f"否則送審申請文件時, 系統無法判斷這些槽體的水質是否合理變動。"
+                                        )
+                                except Exception:
+                                    pass
                             if result.get("backup"):
                                 st.caption(f"備份: `{os.path.basename(result['backup'])}`")
                             st.info(
                                 "💡 後續流程:\n"
                                 "1. 切到「🔄 規則庫管理」分頁\n"
                                 "2. 按「⬆️ 上傳 xlsx → 協作表」讓新規則同步到雲端\n"
-                                "3. 通知系統管理員將新規則部署到線上版"
+                                "3. 若有新槽體, 請到 `_槽體學理` 分頁補上學理規則\n"
+                                "4. 通知系統管理員將新規則部署到線上版"
                             )
                         else:
                             st.error(f"❌ 失敗: {result.get('error', '?')}")
