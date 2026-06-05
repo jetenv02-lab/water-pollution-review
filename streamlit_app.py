@@ -445,8 +445,40 @@ with tab1:
     else:
         uploaded = st.file_uploader("選擇 PDF", type=["pdf"])
 
-    # 一鍵跑完整流程: 抽取 + OCR + 智能審查
-    if uploaded is not None:
+    # 判斷: 這個 uploaded 是不是「剛剛跑完審查的同一個檔」?
+    # 跑完後 file_uploader 因為 widget 記憶, 重 rerun 仍然會回同一個檔,
+    # 進入「if uploaded is not None」會重新顯示整個表單, 讓使用者誤以為
+    # 「審查又自動開始 / 還沒結束」。改成: 已跑過審查 → 顯示「✅ 已完成」+
+    # 「重新審查」按鈕, 不再顯示 checkbox / selectbox / 開始審查鈕。
+    _already_reviewed = (
+        uploaded is not None
+        and st.session_state.get("_check_findings") is not None
+        and st.session_state.get("_pdf_filename") == uploaded.name
+    )
+
+    if _already_reviewed:
+        st.success(
+            f"✅ 已審查: **{uploaded.name}** ({uploaded.size // 1024} KB) — "
+            f"結果在下方顯示"
+        )
+        cc1, cc2 = st.columns([1, 4])
+        with cc1:
+            if st.button("🔄 重新審查", help="清掉本次結果, 重新跑審查",
+                         disabled=_busy_now):
+                # 清掉上次審查的結果, 但保留 PDF (使用者沒換檔, 不用重上傳)
+                for k in ("_check_findings", "_app_data", "_sections",
+                          "_ocr_result", "_flow_extract_result", "_flow_graph"):
+                    st.session_state.pop(k, None)
+                # 清示意圖頁快取
+                for k in list(st.session_state.keys()):
+                    if k.startswith("_balance_pages_cache::"):
+                        st.session_state.pop(k, None)
+                st.rerun()
+        with cc2:
+            st.caption("👇 結果可在下方「📊 各單元詳細頁」「智能審查結果」展開")
+
+    # 一鍵跑完整流程: 抽取 + OCR + 智能審查 (只在「上傳了但還沒跑審查」時顯示)
+    if uploaded is not None and not _already_reviewed:
         st.success(f"已上傳: **{uploaded.name}** ({uploaded.size // 1024} KB)")
 
         # 章節擷取 toggle — 只處理「參、水污染防治措施資料」段
@@ -784,8 +816,17 @@ with tab1:
                 if not _fstat["ok"]:
                     st.warning(f"⚠️ {_fstat['message']} — 此功能需要 Gemini Vision")
                 else:
-                    # 偵測圖頁
-                    loc = _fde.find_balance_diagram_pages(pdf_bytes_for_flow)
+                    # 偵測圖頁 — 用 session 快取避免每次 rerun 都掃整本 PDF
+                    # (修 bug: 沒快取的話, 使用者勾 checkbox 或任何 widget 互動都會觸發
+                    #  rerun, 此函式會跑 5-10 秒掃 400+ 頁 PDF, 看起來像「系統還在執行」)
+                    _pdf_filename_now = st.session_state.get("_pdf_filename", "")
+                    _cache_key = f"_balance_pages_cache::{_pdf_filename_now}"
+                    if _cache_key not in st.session_state:
+                        with st.spinner("偵測示意圖頁..."):
+                            st.session_state[_cache_key] = _fde.find_balance_diagram_pages(
+                                pdf_bytes_for_flow
+                            )
+                    loc = st.session_state[_cache_key]
                     if loc.get("ok") and loc.get("image_pages"):
                         img_pages = loc["image_pages"]
                         st.info(
