@@ -38,11 +38,31 @@ HEAVY_METALS = ["銅", "鎳", "鋅", "鉛", "鎘", "鉻", "總鉻", "六價鉻",
 # pH 調整槽應該只變 pH,其他項目應不變
 PH_ONLY_VARIABLE = {"pH值", "pH", "水溫(攝氏)", "水溫"}
 
+# pH 調整 / 快混類槽體 (本質都是 "加藥+攪拌, 無固液分離", 學理上不該展現
+# 任何水質項目去除/增加, 除了 pH 跟水溫)
+# 申請文件常見的命名變體都列進來
+PH_TANK_TYPES = {
+    "pH調整槽",
+    "pH調整暨快混池",      # 秋棠案例 T03-07 / T04-04 / T05-05
+    "pH調整池暨快混池",    # 秋棠案例 T02-06 的 name_in_doc (含「池」)
+    "pH調整池",            # 純粹改字
+    "pH調整快混池",        # 省略「暨」
+    "pH調整與快混池",
+    "中和池",              # 學理上跟 pH 槽同類 (加鹼/酸調 pH, 無固液分離)
+}
+
 # 沉澱單元類型
 SETTLING_TANK_TYPES = {"沉澱池", "沉降池", "浮除槽"}
 
-# 快混槽類型 (不應展現去除率)
-FAST_MIX_TYPES = {"快混槽", "pH調整槽", "pH調整暨快混池", "中和池", "調勻池", "廢水調整池"}
+# 快混槽類型 (不應展現去除率) — 涵蓋常見命名變體
+FAST_MIX_TYPES = {
+    "快混槽",
+    "pH調整槽", "pH調整池",
+    "pH調整暨快混池", "pH調整池暨快混池", "pH調整快混池", "pH調整與快混池",
+    "中和池",
+    "調勻池",
+    "廢水調整池",
+}
 
 # 生物處理類型 (對重金屬不應有顯著去除)
 BIO_TYPES = {"曝氣槽", "活性污泥槽", "厭氧池", "缺氧池", "好氧池"}
@@ -152,45 +172,79 @@ def check_fast_mix_metal_removal(unit):
 
 
 def check_ph_tank_only_ph_change(unit):
-    """檢查 3: pH 調整槽除 pH 外進出流應一致。"""
+    """檢查 3: pH 調整槽 / 暨快混池 除 pH 外進出流應一致。
+
+    判斷基準改用「質量 (Σ進 vs Σ出)」, 比濃度準 — 若進出流量 Q 不同,
+    用濃度會誤判 (例: 稀釋/濃縮); 質量則直接反映「該項目絕對含量是否變動」。
+
+    涵蓋變體: 秋棠案例 T02-06 (pH調整池暨快混池)、T03-07/T04-04/T05-05
+    (pH調整暨快混池)、T05-06 (pH調整池) 等過去全部漏抓的單元。
+    """
     findings = []
     code = unit["raw_code"]
     std_tank = unit["std_tank"]
-    if std_tank != "pH調整槽":
+    name_in_doc = unit.get("name_in_doc", "")
+    # 用集合比對 + name_in_doc fallback (萬一 std_tank 沒被歸到位)
+    if std_tank not in PH_TANK_TYPES and name_in_doc not in PH_TANK_TYPES:
         return findings
 
-    influent = unit.get("influent", {})
-    effluent = unit.get("effluent", {})
+    influent = unit.get("influent", {}) or {}
+    effluent = unit.get("effluent", {}) or {}
     if not influent or not effluent:
         return findings
 
-    # 取第一組進出流比對
-    for in_code, in_items in influent.items():
-        for out_code, out_items in effluent.items():
-            for item, v_in in in_items.items():
-                if item in PH_ONLY_VARIABLE:
-                    continue
-                if not isinstance(v_in, dict):
-                    continue
-                c_in = to_float(v_in.get("濃度"))
-                v_out = out_items.get(item, {})
-                if not isinstance(v_out, dict):
-                    continue
-                c_out = to_float(v_out.get("濃度"))
-                if c_in is None or c_out is None or c_in == 0:
-                    continue
-                if abs(c_out - c_in) / max(c_in, 0.0001) > 0.05:  # > 5% 差異
-                    findings.append({
-                        "嚴重度": "待人工",
-                        "類型": "質量平衡",
-                        "單元": code,
-                        "標準槽體": std_tank,
-                        "對照項目": item,
-                        "描述": f"{item} 進 {c_in:.2f} → 出 {c_out:.2f}。pH 調整槽除 pH 外不應有變化。",
-                        "依據": "劉暐廷技師缺失: pH 調整槽除 pH 外進出流應一致",
-                    })
-            break  # 只比第一組
-        break
+    # 收集所有水質項目 (扣掉 pH / 水溫)
+    all_items = set()
+    for stream in list(influent.values()) + list(effluent.values()):
+        if isinstance(stream, dict):
+            all_items.update(stream.keys())
+    all_items = {i for i in all_items if i not in PH_ONLY_VARIABLE}
+
+    # 對每個項目, 算 Σ進流質量 vs Σ出流質量
+    for item in sorted(all_items):
+        in_mass = 0.0
+        out_mass = 0.0
+        in_has = False
+        out_has = False
+        for stream in influent.values():
+            if not isinstance(stream, dict):
+                continue
+            v = stream.get(item)
+            if isinstance(v, dict):
+                m = to_float(v.get("質量"))
+                if m is not None:
+                    in_mass += m
+                    in_has = True
+        for stream in effluent.values():
+            if not isinstance(stream, dict):
+                continue
+            v = stream.get(item)
+            if isinstance(v, dict):
+                m = to_float(v.get("質量"))
+                if m is not None:
+                    out_mass += m
+                    out_has = True
+
+        if not (in_has and out_has and in_mass > 0):
+            continue
+
+        diff_pct = abs(out_mass - in_mass) / in_mass * 100
+        if diff_pct > 5:  # > 5% 差異視為異常
+            # 是減少還是增加?
+            direction = "減少" if out_mass < in_mass else "增加"
+            findings.append({
+                "嚴重度": "不合理",
+                "類型": "質量平衡",
+                "單元": code,
+                "標準槽體": std_tank,
+                "對照項目": item,
+                "描述": (
+                    f"{item} 質量 進 {in_mass:.3f} → 出 {out_mass:.3f} kg/d "
+                    f"({direction} {diff_pct:.1f}%)。{std_tank} 無固液分離, "
+                    f"除 pH 外不應有變化。"
+                ),
+                "依據": "學理: pH 調整 / 快混類槽體只加藥攪拌, 無分離機制",
+            })
     return findings
 
 
