@@ -108,15 +108,28 @@ def compute_unit_removal(unit):
             }
 
     # summary + 警告
+    # 學理: pH 調整暨快混池 / 快混槽 / 慢混池 因為加混凝劑/助凝劑, SS 增加是合理的,
+    # 不該標警告。其他項目 (重金屬/COD) 在這類槽體增加才是異常。
+    name_in_doc = unit.get("name_in_doc", "")
+    std_tank = unit.get("std_tank", "")
+    is_fast_mix_or_floc = any(
+        kw in (name_in_doc + std_tank)
+        for kw in ("快混", "慢混", "暨快混", "凝聚")
+    )
+
     removals = [r["removal_pct"] for r in items_result.values()]
     warnings = []
     for item, r in items_result.items():
         pct = r["removal_pct"]
+        is_ss = any(k in item for k in ("懸浮", "SS", "ss"))
         if pct < -10:
+            # 快混/慢混類槽體的 SS 增加合理, 不警告
+            if is_ss and is_fast_mix_or_floc:
+                continue
             warnings.append(
                 f"{item}: 削減率 {pct:.1f}% (出流質量 > 進流質量, 可能水量增加或水質誤植)"
             )
-        elif pct > 99.5 and not any(k in item for k in ("懸浮", "SS", "ss")):
+        elif pct > 99.5 and not is_ss:
             warnings.append(
                 f"{item}: 削減率 {pct:.1f}% 過高 (>99.5%, 不合常理)"
             )
