@@ -847,24 +847,88 @@ with tab1:
                         if st.button("🤖 開始解析", type="primary", key="_btn_flow_extract",
                                      width="stretch",
                                      disabled=st.session_state.get("_busy", False)):
+                            # 跟主審查一樣套全頁 overlay, 讓使用者明確知道「系統正在跑」
+                            import time as _t_flow
                             st.session_state["_busy"] = True
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
+                            st.session_state["_busy_run_id"] = _t_flow.time()
+
+                            # CSS overlay 樣式 (跟主審查同一套)
+                            flow_overlay = st.empty()
+                            _t_flow_start = _t_flow.time()
+
+                            def _render_flow_overlay(percent, stage_text):
+                                elapsed = int(_t_flow.time() - _t_flow_start)
+                                flow_overlay.markdown(f"""
+                                <style>
+                                .reviewing-overlay {{
+                                    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                                    background: rgba(15, 23, 42, 0.85);
+                                    z-index: 9999;
+                                    display: flex; align-items: center; justify-content: center;
+                                    backdrop-filter: blur(4px);
+                                }}
+                                .reviewing-card {{
+                                    background: white; border-radius: 16px;
+                                    padding: 32px 40px; max-width: 560px; width: 90%;
+                                    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+                                    text-align: center;
+                                }}
+                                .reviewing-card h2 {{ margin: 0 0 8px 0; font-size: 22px; color: #1e293b; }}
+                                .reviewing-card .sub {{ color: #64748b; font-size: 14px; margin-bottom: 18px; }}
+                                .reviewing-card .stage {{
+                                    background: #eff6ff; color: #1d4ed8;
+                                    padding: 12px 16px; border-radius: 8px;
+                                    font-weight: 600; margin: 12px 0;
+                                    border-left: 4px solid #2563eb;
+                                    text-align: left;
+                                }}
+                                .reviewing-card .pct {{ font-size: 36px; font-weight: 700; color: #2563eb; margin: 8px 0 4px 0; }}
+                                .reviewing-card .bar-bg {{
+                                    background: #e2e8f0; border-radius: 999px; height: 10px;
+                                    overflow: hidden; margin: 8px 0 16px 0;
+                                }}
+                                .reviewing-card .bar-fill {{
+                                    background: linear-gradient(90deg, #3b82f6, #2563eb);
+                                    height: 100%; border-radius: 999px;
+                                    transition: width 0.3s ease;
+                                }}
+                                .reviewing-card .eta {{ color: #64748b; font-size: 13px; text-align: right; margin-top: 4px; }}
+                                </style>
+                                <div class="reviewing-overlay">
+                                  <div class="reviewing-card">
+                                    <h2>📊 水量平衡示意圖解析中</h2>
+                                    <div class="sub">Gemini Vision 處理中 · 請勿關閉頁面 · 切勿點頁面其他按鈕</div>
+                                    <div class="stage">{stage_text}</div>
+                                    <div class="pct">{percent}%</div>
+                                    <div class="bar-bg"><div class="bar-fill" style="width: {percent}%;"></div></div>
+                                    <div class="eta">已耗時 {elapsed} 秒</div>
+                                  </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
                             def _cb(cur, tot, msg):
-                                pct = (cur / tot) if tot else 0
-                                progress_bar.progress(min(pct, 1.0), text=msg)
-                                status_text.caption(f"[{cur}/{tot}] {msg}")
-                            with st.spinner("Gemini Vision 處理中…"):
+                                pct = int((cur / tot) * 100) if tot else 0
+                                _render_flow_overlay(min(pct, 99), f"處理第 {cur} / {tot} 張示意圖 · {msg}")
+
+                            try:
+                                _render_flow_overlay(5, f"準備解析 {max_pages} 張示意圖...")
                                 fr = _fde.extract_all_balance_diagrams(
                                     pdf_bytes_for_flow,
                                     max_pages=max_pages,
                                     progress_callback=_cb,
                                 )
-                            progress_bar.empty()
-                            status_text.empty()
-                            st.session_state["_flow_extract_result"] = fr
-                            # 解鎖
-                            st.session_state["_busy"] = False
+                                _render_flow_overlay(100, "✅ 解析完成!")
+                            finally:
+                                # 清掉 overlay
+                                try:
+                                    flow_overlay.empty()
+                                except Exception:
+                                    pass
+                                st.session_state["_flow_extract_result"] = fr
+                                # 解鎖
+                                st.session_state["_busy"] = False
+                                st.session_state.pop("_busy_run_id", None)
+                                st.rerun()
 
                         fr = st.session_state.get("_flow_extract_result")
                         if fr:
