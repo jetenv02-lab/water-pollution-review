@@ -396,6 +396,7 @@ if st.session_state.get("_busy", False):
     if _now_ts - _bid > 300:
         st.session_state["_busy"] = False
         st.session_state.pop("_busy_run_id", None)
+        st.session_state.pop("_busy_kind", None)
         st.warning("⚠️ 偵測到上次審查被中途中斷,已解鎖。請重新點「開始完整審查」。")
 
 # 若使用者點過停止鈕 → 顯示已停止
@@ -434,14 +435,21 @@ with tab1:
     # (Streamlit 每次 widget 互動都會從頭重跑 script, file_uploader 重新選檔
     #  會 rerun, 把正在跑的審查中斷, _busy 因為 try/finally 沒走完而卡在 True)
     _busy_now = st.session_state.get("_busy", False)
-    if _busy_now:
-        # 完全不顯示 uploader, 改顯示固定的「正在審查」狀態 + 已上傳檔名
+    _busy_kind = st.session_state.get("_busy_kind", "")  # "main" 主審查 / "flow" 示意圖解析
+
+    if _busy_now and _busy_kind == "main":
+        # 只在「主審查」進行中顯示這個鎖定提示
+        # (示意圖解析的 overlay 已經蓋滿全頁, 不需要再顯示這個小提示)
         _prev_name = st.session_state.get("_pdf_filename", "(未知)")
         st.info(
             f"🔒 **審查進行中** — 已鎖定上傳功能,避免中斷處理\n\n"
             f"目前正在審查的檔案: **{_prev_name}**"
         )
         uploaded = None  # 走「顯示區」路線, 不會觸發底下的 button 邏輯
+    elif _busy_now:
+        # 示意圖解析 (或其他非主審查的 busy) — 不顯示提示也不顯示 uploader
+        # overlay 蓋全頁了, 這裡顯示什麼都看不到, 留空避免「框露半邊」的詭異畫面
+        uploaded = None
     else:
         uploaded = st.file_uploader("選擇 PDF", type=["pdf"])
 
@@ -518,8 +526,9 @@ with tab1:
         if st.button("🚀 開始完整審查", type="primary",
                      disabled=_is_busy,
                      help="一次跑完: 抽取單元 → 章節定位 → OCR 流向圖 → 智能審查"):
-            # 標記正在跑審查 (鎖其他主要按鈕)
+            # 標記正在跑「主審查」(鎖其他主要按鈕 + 觸發鎖定提示)
             st.session_state["_busy"] = True
+            st.session_state["_busy_kind"] = "main"
             import time as _t_lock
             st.session_state["_busy_run_id"] = _t_lock.time()
             # 暫存 PDF 到 disk 供多步驟使用
@@ -662,6 +671,7 @@ with tab1:
                         st.session_state["_cancel_just_done"] = True
                         st.session_state["_busy"] = False
                         st.session_state.pop("_busy_run_id", None)
+                        st.session_state.pop("_busy_kind", None)
                         st.rerun()
 
             try:
@@ -789,6 +799,7 @@ with tab1:
                 # 解鎖 UI
                 st.session_state["_busy"] = False
                 st.session_state.pop("_busy_run_id", None)
+                st.session_state.pop("_busy_kind", None)
                 st.session_state.pop("_cancel_requested", None)
                 # 重新 rerun, 讓主畫面正常顯示結果
                 st.rerun()
@@ -850,6 +861,7 @@ with tab1:
                             # 跟主審查一樣套全頁 overlay, 讓使用者明確知道「系統正在跑」
                             import time as _t_flow
                             st.session_state["_busy"] = True
+                            st.session_state["_busy_kind"] = "flow"  # 示意圖解析, 不顯示主鎖定提示
                             st.session_state["_busy_run_id"] = _t_flow.time()
 
                             # CSS overlay 樣式 (跟主審查同一套)
@@ -928,6 +940,7 @@ with tab1:
                                 # 解鎖
                                 st.session_state["_busy"] = False
                                 st.session_state.pop("_busy_run_id", None)
+                                st.session_state.pop("_busy_kind", None)
                                 st.rerun()
 
                         fr = st.session_state.get("_flow_extract_result")
