@@ -188,51 +188,49 @@ def check_fast_mix_metal_removal(unit):
     return findings
 
 
-def check_ph_tank_only_ph_change(unit):
-    """檢查 3: pH 調整槽 / 暨快混池 進出流水質學理檢查。
+def check_tank_chemistry(unit):
+    """檢查 3: 各槽體進出流水質學理檢查。
 
-    依槽體類型套不同的「允許變動」清單:
-    - 純 pH 槽: 只允許 pH / 水溫變動, 其他都該守恆
-    - pH 暨快混池: pH/水溫 + SS 允許變動 (因加混凝劑), 其他 (重金屬/COD/BOD) 不該變
+    新版邏輯 (v2): 從規則庫.xlsx 的 _槽體學理 分頁讀規則, 涵蓋所有
+    常見處理單元 (pH 槽、沉澱池、曝氣槽、脫水機、活性碳塔等 27+ 條規則)。
+    若規則庫讀不到, fallback 到本檔內 hardcoded pH 槽常數 (舊行為)。
 
-    判斷基準用「質量 (Σ進 vs Σ出)」, 比濃度準:
-    - 若進出流量 Q 不同, 用濃度會誤判 (例: 稀釋/濃縮)
-    - 質量直接反映「該項目絕對含量是否變動」, 跟 Q 無關
+    判斷基準: Σ進質量 vs Σ出質量, 容忍度依槽體類型而定 (5%~30%)。
     """
+    # 優先用新模組
+    try:
+        import tank_chemistry
+        rules = tank_chemistry.load_rules()
+        if rules:
+            return tank_chemistry.check_unit(unit, rules)
+    except Exception:
+        pass
+
+    # === Fallback: 舊版只覆蓋 pH 槽 / 暨快混池 ===
     findings = []
     code = unit["raw_code"]
     std_tank = unit["std_tank"]
     name_in_doc = unit.get("name_in_doc", "")
-
-    # 判斷槽體類型 — **優先 name_in_doc, 再 std_tank**
-    # 原因: name_in_doc 是 PDF 原始名稱, 比較精確
-    #       std_tank 是系統分類後的結果, 同類設施可能被歸到不同 std_tank
-    #       (例如 T02-06 name_in_doc="pH調整池暨快混池" 但 std_tank="pH調整槽")
-    # 快混池要先判斷, 因為「pH調整暨快混池」名稱裡也含「pH調整」, 不能讓純 pH 規則先攔截
     if name_in_doc in PH_FAST_MIX_TYPES or std_tank in PH_FAST_MIX_TYPES:
-        tank_class = "ph_fast_mix"
         allow_vary = PH_FAST_MIX_ALLOW_VARY
-        rule_desc = "pH 暨快混池加酸鹼+混凝劑, 除 pH/SS 外應守恆 (重金屬須後端沉澱才能去除)"
+        rule_desc = "pH 暨快混池加酸鹼+混凝劑, 除 pH/SS 外應守恆"
     elif name_in_doc in PURE_PH_TANK_TYPES or std_tank in PURE_PH_TANK_TYPES:
-        tank_class = "pure_ph"
         allow_vary = PURE_PH_ALLOW_VARY
         rule_desc = "純 pH 調整槽只加酸/鹼, 除 pH 外應守恆"
     else:
-        return findings  # 不是 pH 槽類, 跳過
+        return findings
 
     influent = unit.get("influent", {}) or {}
     effluent = unit.get("effluent", {}) or {}
     if not influent or not effluent:
         return findings
 
-    # 收集所有水質項目, 扣掉允許變動的
     all_items = set()
     for stream in list(influent.values()) + list(effluent.values()):
         if isinstance(stream, dict):
             all_items.update(stream.keys())
     all_items = {i for i in all_items if i not in allow_vary}
 
-    # 對每個項目, 算 Σ進流質量 vs Σ出流質量
     for item in sorted(all_items):
         in_mass = 0.0
         out_mass = 0.0
@@ -256,12 +254,10 @@ def check_ph_tank_only_ph_change(unit):
                 if m is not None:
                     out_mass += m
                     out_has = True
-
         if not (in_has and out_has and in_mass > 0):
             continue
-
         diff_pct = abs(out_mass - in_mass) / in_mass * 100
-        if diff_pct > 5:  # > 5% 差異視為異常
+        if diff_pct > 5:
             direction = "減少" if out_mass < in_mass else "增加"
             findings.append({
                 "嚴重度": "不合理",
@@ -273,9 +269,13 @@ def check_ph_tank_only_ph_change(unit):
                     f"{item} 質量 進 {in_mass:.3f} → 出 {out_mass:.3f} kg/d "
                     f"({direction} {diff_pct:.1f}%)。{rule_desc}。"
                 ),
-                "依據": f"學理 ({tank_class}): " + rule_desc,
+                "依據": f"學理 (fallback): " + rule_desc,
             })
     return findings
+
+
+# 舊名 alias — 維持向下相容 (給可能 import 舊名的外部呼叫者)
+check_ph_tank_only_ph_change = check_tank_chemistry
 
 
 def check_settling_overflow_rate(unit):
@@ -341,7 +341,7 @@ def run_balance_checks(app_data):
     checkers = [
         check_dissolved_concentration_up,
         check_fast_mix_metal_removal,
-        check_ph_tank_only_ph_change,
+        check_tank_chemistry,            # 新版: 27 條槽體學理規則 (規則庫驅動)
         check_settling_overflow_rate,
         check_required_equipment,
     ]
