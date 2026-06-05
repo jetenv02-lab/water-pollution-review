@@ -517,11 +517,32 @@ with tab1:
             help="選了之後智能審查會檢查該事業類別應申報的項目是否漏項",
         )
 
+        # 是否同時跑「示意圖解析」(Step 4) — 用 Gemini Vision 抽流向圖
+        # 預先檢查 Gemini key, 沒設就 disable + 改說明
+        try:
+            import gemini_extractor as _gex_check
+            _gex_ok = _gex_check.check_gemini_status().get("ok", False)
+        except Exception:
+            _gex_ok = False
+
+        also_flow = st.checkbox(
+            "📊 同時跑「水量平衡示意圖解析」(Step 4)",
+            value=_gex_ok,  # Gemini 沒設就預設不勾
+            key="_also_flow",
+            disabled=_busy_now or not _gex_ok,
+            help=(
+                "用 AI 視覺辨識讀流向示意圖, 拿到精確跨單元流向 + Q 值, "
+                "並跟反推 Q 互相驗算。約 +30 秒, 約 $0.005-0.01 / 份。\n\n"
+                "若不勾, 反推 Q 還是會算 (來自水質表), 只是不會做圖面比對。"
+                if _gex_ok else "AI 影像辨識尚未啟用, 此選項不可用"
+            ),
+        )
+
         # 🔒 若正在跑審查, button 禁用
         _is_busy = st.session_state.get("_busy", False)
         if _is_busy:
             st.warning(
-                "⏳ **審查進行中,請勿關閉頁面或操作其他功能** — 此操作通常需要 30秒~2分鐘"
+                "⏳ **審查進行中,請勿關閉頁面或操作其他功能** — 此操作通常需要 30秒~3分鐘"
             )
         if st.button("🚀 開始完整審查", type="primary",
                      disabled=_is_busy,
@@ -727,9 +748,10 @@ with tab1:
                 # 合併三層, 規則庫驅動的放最後 (一般是「待人工」性質)
                 st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
 
-                # 完成
+                # 不要立刻顯示 100% — 還有後續工作 (統計 / 寫 Sheet 歷史紀錄)
+                _render_overlay(97, "整理結果並存檔...", "幾秒")
+
                 total_elapsed = _time.time() - t_start
-                _render_overlay(100, f"✅ 全部完成! 共耗時 {total_elapsed:.0f} 秒", "0 秒")
                 stats = {"不合理": 0, "待人工": 0}
                 for f in st.session_state["_check_findings"]:
                     sev = f.get("嚴重度")
@@ -766,7 +788,8 @@ with tab1:
                 # 限制歷史只保留最近 10 筆
                 st.session_state["_review_history"] = st.session_state["_review_history"][:10]
 
-                # 寫入歷史紀錄
+                # 寫入歷史紀錄 (網路請求可能要 5-10 秒)
+                _render_overlay(99, "寫入審查紀錄 (雲端存檔)...", "幾秒")
                 try:
                     import review_history
                     sheet_result = review_history.append_review_record(review_record)
@@ -779,6 +802,10 @@ with tab1:
                         st.session_state["_last_sheet_log_status"] = ""
                 except Exception:
                     st.session_state["_last_sheet_log_status"] = ""
+
+                # 真正完成 — 短暫顯示 100% 後 finally 會清掉 overlay 並 rerun
+                total_elapsed = _time.time() - t_start
+                _render_overlay(100, f"✅ 全部完成! 共耗時 {total_elapsed:.0f} 秒", "0 秒")
             except RuntimeError as _re:
                 # 使用者按了停止鈕 (在 step 之間檢查到 _cancel_requested)
                 if "停止" in str(_re):
