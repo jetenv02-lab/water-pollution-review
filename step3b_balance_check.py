@@ -35,21 +35,38 @@ DISSOLVED_ITEMS = [
 HEAVY_METALS = ["銅", "鎳", "鋅", "鉛", "鎘", "鉻", "總鉻", "六價鉻",
                 "錫", "鐵", "錳", "汞", "總汞", "砷", "鉬"]
 
-# pH 調整槽應該只變 pH,其他項目應不變
-PH_ONLY_VARIABLE = {"pH值", "pH", "水溫(攝氏)", "水溫"}
+# ── pH 槽 / 快混池 學理分類 ──
+# 兩種槽體的加藥方式不同, 學理上允許變動的水質項目也不同:
+#
+# 1. 純 pH 調整槽: 只加酸/鹼 (HCl, NaOH, Ca(OH)₂)
+#    → 學理上「只有 pH 跟水溫」會變, 其他水質 (SS, 重金屬, COD, ...) 都不該變
+#
+# 2. pH 調整暨快混池: 加酸/鹼 + 混凝劑 (PAC, alum, FeCl₃)
+#    → pH 會變 + 混凝劑本身是固體, 所以 SS 會增加 (合理)
+#    → 但仍無固液分離, 重金屬/COD/BOD 等不應減少 (需後端沉澱池才能去除)
 
-# pH 調整 / 快混類槽體 (本質都是 "加藥+攪拌, 無固液分離", 學理上不該展現
-# 任何水質項目去除/增加, 除了 pH 跟水溫)
-# 申請文件常見的命名變體都列進來
-PH_TANK_TYPES = {
+# 純 pH 調整槽 — 只允許 pH / 水溫變動
+PURE_PH_TANK_TYPES = {
     "pH調整槽",
-    "pH調整暨快混池",      # 秋棠案例 T03-07 / T04-04 / T05-05
-    "pH調整池暨快混池",    # 秋棠案例 T02-06 的 name_in_doc (含「池」)
-    "pH調整池",            # 純粹改字
-    "pH調整快混池",        # 省略「暨」
-    "pH調整與快混池",
-    "中和池",              # 學理上跟 pH 槽同類 (加鹼/酸調 pH, 無固液分離)
+    "pH調整池",
+    "中和池",  # 學理上跟純 pH 槽同類 (只加酸鹼)
 }
+PURE_PH_ALLOW_VARY = {"pH值", "pH", "水溫(攝氏)", "水溫"}
+
+# pH 調整暨快混池 — pH/水溫 + SS 都允許變動 (因加了混凝劑)
+PH_FAST_MIX_TYPES = {
+    "pH調整暨快混池",      # 秋棠 T03-07 / T04-04 / T05-05
+    "pH調整池暨快混池",    # 秋棠 T02-06
+    "pH調整快混池",
+    "pH調整與快混池",
+}
+PH_FAST_MIX_ALLOW_VARY = {
+    "pH值", "pH", "水溫(攝氏)", "水溫",
+    "懸浮固體", "懸浮固體（mg/L）", "懸浮固體(mg/L)", "SS", "ss",
+}
+
+# 法源用 (保留舊變數名給其他模組/檢查相容)
+PH_ONLY_VARIABLE = PURE_PH_ALLOW_VARY
 
 # 沉澱單元類型
 SETTLING_TANK_TYPES = {"沉澱池", "沉降池", "浮除槽"}
@@ -172,33 +189,48 @@ def check_fast_mix_metal_removal(unit):
 
 
 def check_ph_tank_only_ph_change(unit):
-    """檢查 3: pH 調整槽 / 暨快混池 除 pH 外進出流應一致。
+    """檢查 3: pH 調整槽 / 暨快混池 進出流水質學理檢查。
 
-    判斷基準改用「質量 (Σ進 vs Σ出)」, 比濃度準 — 若進出流量 Q 不同,
-    用濃度會誤判 (例: 稀釋/濃縮); 質量則直接反映「該項目絕對含量是否變動」。
+    依槽體類型套不同的「允許變動」清單:
+    - 純 pH 槽: 只允許 pH / 水溫變動, 其他都該守恆
+    - pH 暨快混池: pH/水溫 + SS 允許變動 (因加混凝劑), 其他 (重金屬/COD/BOD) 不該變
 
-    涵蓋變體: 秋棠案例 T02-06 (pH調整池暨快混池)、T03-07/T04-04/T05-05
-    (pH調整暨快混池)、T05-06 (pH調整池) 等過去全部漏抓的單元。
+    判斷基準用「質量 (Σ進 vs Σ出)」, 比濃度準:
+    - 若進出流量 Q 不同, 用濃度會誤判 (例: 稀釋/濃縮)
+    - 質量直接反映「該項目絕對含量是否變動」, 跟 Q 無關
     """
     findings = []
     code = unit["raw_code"]
     std_tank = unit["std_tank"]
     name_in_doc = unit.get("name_in_doc", "")
-    # 用集合比對 + name_in_doc fallback (萬一 std_tank 沒被歸到位)
-    if std_tank not in PH_TANK_TYPES and name_in_doc not in PH_TANK_TYPES:
-        return findings
+
+    # 判斷槽體類型 — **優先 name_in_doc, 再 std_tank**
+    # 原因: name_in_doc 是 PDF 原始名稱, 比較精確
+    #       std_tank 是系統分類後的結果, 同類設施可能被歸到不同 std_tank
+    #       (例如 T02-06 name_in_doc="pH調整池暨快混池" 但 std_tank="pH調整槽")
+    # 快混池要先判斷, 因為「pH調整暨快混池」名稱裡也含「pH調整」, 不能讓純 pH 規則先攔截
+    if name_in_doc in PH_FAST_MIX_TYPES or std_tank in PH_FAST_MIX_TYPES:
+        tank_class = "ph_fast_mix"
+        allow_vary = PH_FAST_MIX_ALLOW_VARY
+        rule_desc = "pH 暨快混池加酸鹼+混凝劑, 除 pH/SS 外應守恆 (重金屬須後端沉澱才能去除)"
+    elif name_in_doc in PURE_PH_TANK_TYPES or std_tank in PURE_PH_TANK_TYPES:
+        tank_class = "pure_ph"
+        allow_vary = PURE_PH_ALLOW_VARY
+        rule_desc = "純 pH 調整槽只加酸/鹼, 除 pH 外應守恆"
+    else:
+        return findings  # 不是 pH 槽類, 跳過
 
     influent = unit.get("influent", {}) or {}
     effluent = unit.get("effluent", {}) or {}
     if not influent or not effluent:
         return findings
 
-    # 收集所有水質項目 (扣掉 pH / 水溫)
+    # 收集所有水質項目, 扣掉允許變動的
     all_items = set()
     for stream in list(influent.values()) + list(effluent.values()):
         if isinstance(stream, dict):
             all_items.update(stream.keys())
-    all_items = {i for i in all_items if i not in PH_ONLY_VARIABLE}
+    all_items = {i for i in all_items if i not in allow_vary}
 
     # 對每個項目, 算 Σ進流質量 vs Σ出流質量
     for item in sorted(all_items):
@@ -230,7 +262,6 @@ def check_ph_tank_only_ph_change(unit):
 
         diff_pct = abs(out_mass - in_mass) / in_mass * 100
         if diff_pct > 5:  # > 5% 差異視為異常
-            # 是減少還是增加?
             direction = "減少" if out_mass < in_mass else "增加"
             findings.append({
                 "嚴重度": "不合理",
@@ -240,10 +271,9 @@ def check_ph_tank_only_ph_change(unit):
                 "對照項目": item,
                 "描述": (
                     f"{item} 質量 進 {in_mass:.3f} → 出 {out_mass:.3f} kg/d "
-                    f"({direction} {diff_pct:.1f}%)。{std_tank} 無固液分離, "
-                    f"除 pH 外不應有變化。"
+                    f"({direction} {diff_pct:.1f}%)。{rule_desc}。"
                 ),
-                "依據": "學理: pH 調整 / 快混類槽體只加藥攪拌, 無分離機制",
+                "依據": f"學理 ({tank_class}): " + rule_desc,
             })
     return findings
 
