@@ -445,12 +445,26 @@ def extract_application(pdf_path, verbose=True):
                 if r["effl_code"]:
                     units[code]["effluent"][r["effl_code"]] = r["effl_quality"]
 
-    return {
+    result = {
         "source_pdf": os.path.basename(pdf_path),
         "extracted_at": datetime.now().isoformat(),
         "total_units": len(units),
         "units": units,
     }
+
+    # 反推每條 stream 的流量 Q (從質量÷濃度×1000 算)
+    # 完整覆蓋 100% 有水質資料的 stream, 不需要 Gemini Vision 跑示意圖解析
+    # 若 19 項算出來收斂 → 確信值; 若分散 → 水質表填錯, 後續學理檢查會抓
+    try:
+        import stream_q_calculator as _sqc
+        _sqc.enrich_app_data(result)
+        # 順手組「stream_code → Q 對照表」放頂層, 給 UI 直接用
+        result["stream_q_map"] = _sqc.build_stream_q_map(result)
+    except Exception as _q_err:
+        # 反推失敗不致命 — 主流程繼續, 沒 Q 而已
+        result["stream_q_error"] = str(_q_err)
+
+    return result
 
 
 def main():

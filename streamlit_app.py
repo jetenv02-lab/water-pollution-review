@@ -1409,51 +1409,73 @@ with tab1:
                            for e in unit["equipment"]]
                 st.dataframe(eq_rows, width="stretch", hide_index=True)
 
-            # ── 從示意圖解析結果建立 stream → Q (CMD) 對照表 ──
-            # 不用反推/計算; 直接用圖上標的 Q = XXX CMD
-            stream_q_map = {}
+            # ── 反推 Q 對照表 (主要來源) + 示意圖解析 Q (驗算用) ──
+            # 主來源: step2 抽取階段已從「質量÷濃度×1000」反推, 覆蓋率 100%
+            # 驗算: 示意圖解析 (Gemini Vision) 跑完後可比對, 不一致就標 ⚠️
+            stream_q_reverse = unit.get("stream_q", {}) or {}
+
+            stream_q_diagram = {}
             _fr = st.session_state.get("_flow_extract_result")
             if _fr:
-                # 1) 主流向 (Gemini 抽出, 帶 from_stream / to_stream / Q_cmd)
                 for f in _fr.get("all_flows", []) or []:
                     q = f.get("Q_cmd")
-                    if q is None:
-                        continue
+                    if q is None: continue
                     for k in ("from_stream", "to_stream"):
-                        code = f.get(k)
-                        if code:
-                            stream_q_map.setdefault(str(code), q)
-                # 2) 外部進入 (WMxx → WTBxx-yy-z)
+                        c = f.get(k)
+                        if c: stream_q_diagram.setdefault(str(c), q)
                 for ei in _fr.get("external_inputs", []) or []:
                     q = ei.get("Q_cmd")
-                    if q is None:
-                        continue
+                    if q is None: continue
                     for k in ("code", "to_stream"):
-                        code = ei.get(k)
-                        if code:
-                            stream_q_map.setdefault(str(code), q)
-                # 3) 放流口 (WTAxx-yy-z → Dxx)
+                        c = ei.get(k)
+                        if c: stream_q_diagram.setdefault(str(c), q)
                 for dp in _fr.get("discharge_points", []) or []:
                     q = dp.get("Q_cmd")
-                    if q is None:
-                        continue
+                    if q is None: continue
                     for k in ("code", "from_stream"):
-                        code = dp.get(k)
-                        if code:
-                            stream_q_map.setdefault(str(code), q)
+                        c = dp.get(k)
+                        if c: stream_q_diagram.setdefault(str(c), q)
 
             def _fmt_q_label(stream_code):
-                """編號旁邊的 Q 標籤 — 沒對到就空字串。"""
-                q = stream_q_map.get(str(stream_code))
-                if q is None:
-                    return ""
-                try:
-                    return f" · Q = {float(q):g} CMD"
-                except (TypeError, ValueError):
-                    return f" · Q = {q} CMD"
+                """編號旁邊的 Q 標籤。
+
+                優先用反推 Q (來自水質表, 100% 覆蓋), 加標「反推」備註。
+                若示意圖解析也有, 比對兩者: 一致用 ✅, 不一致 ⚠️。
+                """
+                rev = stream_q_reverse.get(str(stream_code))
+                diag = stream_q_diagram.get(str(stream_code))
+
+                if rev and rev.get("ok"):
+                    q = rev["q_cmd"]
+                    consistent = rev.get("consistent", True)
+                    spread = rev.get("spread_pct", 0)
+                    items_n = rev.get("items_count", 0)
+                    if not consistent:
+                        # 水質表填寫不一致 (19 項算出來差 > 5%)
+                        return f" · ⚠️ Q ≈ {q:g} CMD (反推, {items_n} 項差 {spread:.1f}%)"
+                    label = f" · Q = {q:g} CMD (反推自水質表)"
+                    # 若示意圖也有, 驗算
+                    if diag is not None and q > 0:
+                        try:
+                            diff = abs(float(diag) - q) / q * 100
+                            if diff > 10:
+                                label += f" ⚠️ 示意圖 = {float(diag):g} (差 {diff:.0f}%)"
+                            else:
+                                label += " ✅"
+                        except (TypeError, ValueError):
+                            pass
+                    return label
+
+                # 沒反推到 → 退用示意圖解析的 Q
+                if diag is not None:
+                    try:
+                        return f" · Q = {float(diag):g} CMD (示意圖解析)"
+                    except (TypeError, ValueError):
+                        return f" · Q = {diag} CMD (示意圖解析)"
+                return ""
 
             if unit.get("influent"):
-                _hint = " (Q 來自示意圖解析)" if stream_q_map else " (尚未跑示意圖解析, 無 Q)"
+                _hint = " — Q 自水質表反推 (質量÷濃度×1000)"
                 st.markdown(f"**進流水質** ({len(unit['influent'])} 流向){_hint}")
                 infl_items = list(unit["influent"].items())
                 for i, (infl_code, qdata) in enumerate(infl_items):
@@ -1461,6 +1483,14 @@ with tab1:
                     # 第一條預設展開, 其他收起
                     expanded = (i == 0)
                     with st.expander(f"📥 **{infl_code}**{q_label}", expanded=expanded):
+                        # 若是反推不一致, 額外提示
+                        rev = stream_q_reverse.get(str(infl_code), {})
+                        if rev.get("ok") and not rev.get("consistent", True):
+                            st.warning(
+                                f"⚠️ 水質表填寫可能有誤: 19 個水質項目分別反推 Q, "
+                                f"算出 {rev['q_min']:.2f} ~ {rev['q_max']:.2f} CMD "
+                                f"(中位 {rev['q_cmd']:.2f}, 差異 {rev['spread_pct']:.1f}%)"
+                            )
                         q_rows = [{"水質項目": str(k),
                                    "濃度": str(v.get("濃度", v.get("範圍", ""))),
                                    "質量": str(v.get("質量", ""))} for k, v in qdata.items()]
@@ -1473,6 +1503,13 @@ with tab1:
                     q_label = _fmt_q_label(effl_code)
                     expanded = (i == 0)
                     with st.expander(f"📤 **{effl_code}**{q_label}", expanded=expanded):
+                        rev = stream_q_reverse.get(str(effl_code), {})
+                        if rev.get("ok") and not rev.get("consistent", True):
+                            st.warning(
+                                f"⚠️ 水質表填寫可能有誤: 19 個水質項目分別反推 Q, "
+                                f"算出 {rev['q_min']:.2f} ~ {rev['q_max']:.2f} CMD "
+                                f"(中位 {rev['q_cmd']:.2f}, 差異 {rev['spread_pct']:.1f}%)"
+                            )
                         q_rows = [{"水質項目": str(k),
                                    "濃度": str(v.get("濃度", v.get("範圍", ""))),
                                    "質量": str(v.get("質量", ""))} for k, v in qdata.items()]

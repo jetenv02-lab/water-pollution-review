@@ -333,6 +333,45 @@ def check_required_equipment(unit):
     return findings
 
 
+def check_quality_table_consistency(unit):
+    """檢查: 進/出流水質表的「質量÷濃度」反推 Q 應在 19 項間一致。
+
+    學理: 同一條 stream, 所有水質項目的 Q = 質量/濃度×1000 理論上要相等
+         (因為流量 Q 是同一條水)。若多項算出的 Q 差 > 5% (spread_pct),
+         表示申請者填質量欄時算錯, 是常見的審查缺失。
+    """
+    findings = []
+    code = unit.get("raw_code") or unit.get("code") or "?"
+    std_tank = unit.get("std_tank", "")
+    stream_q = unit.get("stream_q", {}) or {}
+
+    for stream_code, qres in stream_q.items():
+        if not isinstance(qres, dict):
+            continue
+        if not qres.get("ok"):
+            continue
+        spread = qres.get("spread_pct", 0)
+        items_count = qres.get("items_count", 0)
+        if spread > 5 and items_count >= 3:
+            # 嚴重度依差異程度
+            severity = "不合理" if spread > 20 else "待人工"
+            findings.append({
+                "嚴重度": severity,
+                "類型": "文件一致性",
+                "單元": code,
+                "標準槽體": std_tank,
+                "對照項目": f"水質表 {stream_code}",
+                "描述": (
+                    f"{stream_code}: 用 {items_count} 個水質項目「質量÷濃度」"
+                    f"反推流量 Q, 算出 {qres['q_min']:.2f} ~ {qres['q_max']:.2f} CMD "
+                    f"(差異 {spread:.1f}%, 中位數 {qres['q_cmd']:.2f})。"
+                    f"理論上同條流的 Q 應一致, 差異 > 5% 表示水質表的質量欄可能填錯。"
+                ),
+                "依據": "學理: 質量 = Q × 濃度 × 1e-3, 同條流所有項目 Q 應相等",
+            })
+    return findings
+
+
 # ─────────────────── 主入口 ───────────────────
 
 def run_balance_checks(app_data):
@@ -344,6 +383,7 @@ def run_balance_checks(app_data):
         check_tank_chemistry,            # 新版: 27 條槽體學理規則 (規則庫驅動)
         check_settling_overflow_rate,
         check_required_equipment,
+        check_quality_table_consistency, # 新: 水質表 Q 反推一致性
     ]
     for code, unit in app_data.get("units", {}).items():
         for checker in checkers:
