@@ -585,8 +585,9 @@ with tab1:
             t_start = _time.time()
 
             # 基準預估時間 (秒, 來自實測秋棠案例)
-            # Step1: 60s, Step2 OCR: 90s, Step3: 5s, 總共 ~155s
-            _BASELINE_TOTAL = 155
+            # Step1: 60s, Step2 OCR: 90s, Step3: 5s, Step4 示意圖: 25s
+            # 3-step: 155s, 4-step: 180s
+            _BASELINE_TOTAL = 180 if st.session_state.get("_also_flow") else 155
 
             def _eta(percent_done):
                 """估算剩餘秒數。
@@ -696,14 +697,24 @@ with tab1:
                         st.rerun()
 
             try:
+                # 動態 step 數: also_flow 勾就 4 step, 不勾就 3 step
+                _total_steps = 4 if also_flow else 3
+                _S = lambda n: f"Step {n}/{_total_steps}"
+
+                # 進度條斷點
+                if also_flow:
+                    p1_end, p2_end, p3_end, p4_end = 30, 55, 75, 92
+                else:
+                    p1_end, p2_end, p3_end, p4_end = 40, 75, 96, 96
+
                 # ─── Step 1: 章節定位 + 單元抽取 ───
-                _render_overlay(10, "Step 1/3 · 解析 PDF 章節與處理單元", _eta(10))
+                _render_overlay(10, f"{_S(1)} · 解析 PDF 章節與處理單元", _eta(10))
                 sections_local = locate_sections(tmp_path, verbose=False)
-                _render_overlay(30, "Step 1/3 · 抽取處理單元結構化資料", _eta(30))
+                _render_overlay(p1_end - 10, f"{_S(1)} · 抽取處理單元結構化資料", _eta(p1_end - 10))
                 if st.session_state.get("_cancel_requested"):
                     raise RuntimeError("使用者已要求停止")
                 app_data_local = extract_application(tmp_path, verbose=False)
-                _render_overlay(40, f"Step 1/3 · 完成 (共 {app_data_local['total_units']} 個處理單元)", _eta(40))
+                _render_overlay(p1_end, f"{_S(1)} · 完成 (共 {app_data_local['total_units']} 個處理單元)", _eta(p1_end))
 
                 # 存到 session
                 ocr_target_pages = sorted(set(
@@ -721,32 +732,87 @@ with tab1:
                 # ─── Step 2: OCR (若有流向圖頁) ───
                 if st.session_state.get("_cancel_requested"):
                     raise RuntimeError("使用者已要求停止")
+                _p2_mid = (p1_end + p2_end) // 2
                 if ocr_target_pages:
                     n_ocr_pages = len(ocr_target_pages)
-                    _render_overlay(50, f"Step 2/3 · OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖", _eta(50))
+                    _render_overlay(_p2_mid, f"{_S(2)} · OCR 解析 {n_ocr_pages} 頁流向圖 / 水量平衡圖", _eta(_p2_mid))
                     ocr_result = ocr_diagram_pages(tmp_path, ocr_target_pages, verbose=False)
                     st.session_state["_ocr_result"] = ocr_result
                     if "error" not in ocr_result:
                         summary = ocr_result["summary"]
-                        _render_overlay(75, f"Step 2/3 · 完成 (識別 {summary['total_units']} 單元 / {summary['total_flows']} 流量)", _eta(75))
+                        _render_overlay(p2_end, f"{_S(2)} · 完成 (識別 {summary['total_units']} 單元 / {summary['total_flows']} 流量)", _eta(p2_end))
                     else:
-                        _render_overlay(75, "Step 2/3 · OCR 略過", _eta(75))
+                        _render_overlay(p2_end, f"{_S(2)} · OCR 略過", _eta(p2_end))
                 else:
                     st.session_state.pop("_ocr_result", None)
-                    _render_overlay(75, "Step 2/3 · 無流向圖頁面, 跳過 OCR", _eta(75))
+                    _render_overlay(p2_end, f"{_S(2)} · 無流向圖頁面, 跳過 OCR", _eta(p2_end))
 
                 # ─── Step 3: 智能審查 (3 層: 質量平衡 + 學理 + 規則庫驅動) ───
                 if st.session_state.get("_cancel_requested"):
                     raise RuntimeError("使用者已要求停止")
-                _render_overlay(82, "Step 3/3 · 質量平衡檢查", _eta(82))
+                _p3_a = p2_end + (p3_end - p2_end) // 3
+                _p3_b = p2_end + 2 * (p3_end - p2_end) // 3
+                _render_overlay(_p3_a, f"{_S(3)} · 質量平衡檢查", _eta(_p3_a))
                 findings_basic = run_balance_checks(app_data_local)
-                _render_overlay(88, "Step 3/3 · 學理檢查 (環工設計準則)", _eta(88))
+                _render_overlay(_p3_b, f"{_S(3)} · 學理檢查 (環工設計準則)", _eta(_p3_b))
                 bt = None if business_type == "(不檢查)" else business_type
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
-                _render_overlay(94, "Step 3/3 · 規則庫驅動檢查 (299 筆環工技師缺失)", _eta(94))
+                _render_overlay(p3_end, f"{_S(3)} · 規則庫驅動檢查 (規則庫 299 筆環工技師缺失)", _eta(p3_end))
                 findings_rule = run_rule_driven_check(app_data_local)
                 # 合併三層, 規則庫驅動的放最後 (一般是「待人工」性質)
                 st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
+
+                # ─── Step 4: 水量平衡示意圖解析 (AI 視覺辨識, 可選) ───
+                if also_flow:
+                    if st.session_state.get("_cancel_requested"):
+                        raise RuntimeError("使用者已要求停止")
+                    try:
+                        import flow_diagram_extractor as _fde_main
+                        # 先找示意圖頁
+                        _render_overlay(p3_end + 1, f"{_S(4)} · 定位示意圖頁面", _eta(p3_end + 1))
+                        _loc = _fde_main.find_balance_diagram_pages(pdf_bytes)
+                        _img_pages_count = len(_loc.get("image_pages", [])) if _loc.get("ok") else 0
+                        if _img_pages_count > 0:
+                            # 預設處理上限 5 張避免太貴 (示意圖通常 1-3 張)
+                            _max_pages = min(_img_pages_count, 5)
+                            _render_overlay(
+                                p3_end + 2,
+                                f"{_S(4)} · 找到 {_img_pages_count} 張示意圖, 將處理 {_max_pages} 張 (AI 視覺辨識)",
+                                _eta(p3_end + 2),
+                            )
+
+                            def _flow_cb(cur, tot, msg):
+                                # 把示意圖內部進度 (0~100%) 映射到 p3_end+2 ~ p4_end-1
+                                _range = p4_end - p3_end - 2
+                                inner = (cur / tot) if tot else 0
+                                _pct = p3_end + 2 + int(inner * _range)
+                                _render_overlay(
+                                    min(_pct, p4_end - 1),
+                                    f"{_S(4)} · 處理第 {cur}/{tot} 張示意圖 · {msg}",
+                                    _eta(_pct),
+                                )
+
+                            _fr = _fde_main.extract_all_balance_diagrams(
+                                pdf_bytes,
+                                max_pages=_max_pages,
+                                progress_callback=_flow_cb,
+                            )
+                            st.session_state["_flow_extract_result"] = _fr
+                            if _fr.get("ok"):
+                                _render_overlay(
+                                    p4_end,
+                                    f"{_S(4)} · 完成 (處理 {_fr.get('pages_processed', 0)} 張, "
+                                    f"抽出 {len(_fr.get('all_units', []))} 單元 / "
+                                    f"{len(_fr.get('all_flows', []))} 流向)",
+                                    _eta(p4_end),
+                                )
+                            else:
+                                _render_overlay(p4_end, f"{_S(4)} · AI 解析失敗 (已略過, 可稍後手動重試)", _eta(p4_end))
+                        else:
+                            _render_overlay(p4_end, f"{_S(4)} · 找不到示意圖頁, 已跳過", _eta(p4_end))
+                    except Exception as _flow_err:
+                        # 示意圖解析失敗不致命, 繼續主流程
+                        _render_overlay(p4_end, f"{_S(4)} · 解析略過 ({str(_flow_err)[:40]})", _eta(p4_end))
 
                 # 不要立刻顯示 100% — 還有後續工作 (統計 / 寫 Sheet 歷史紀錄)
                 _render_overlay(97, "整理結果並存檔...", "幾秒")
