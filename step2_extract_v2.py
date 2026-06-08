@@ -159,8 +159,12 @@ def find_section_pages(pdf):
     """掃所有頁,找出兩種關鍵區段:
        - 'facility' 頁: 含『(一)處理單元名稱：xxx 序號：T01－XX』
        - 'quality' 頁: 含『單元序號：T01-XX』 或 『進出處理單元之水質資料』
+
+    回傳:
+        facility_pages: [(page_index, normalized_text, page_obj)]
+        quality_pages: [(page_index, normalized_text)]
     """
-    facility_pages = []  # [(page_index, page_text)]
+    facility_pages = []
     quality_pages = []
     for i, page in enumerate(pdf.pages):
         try:
@@ -169,10 +173,99 @@ def find_section_pages(pdf):
             continue
         norm = normalize_text(text)
         if "(一)處理單元名稱" in norm and "序號" in norm:
-            facility_pages.append((i, norm))
+            facility_pages.append((i, norm, page))
         if "單元序號" in norm or "進出處理單元之水質資料" in norm:
             quality_pages.append((i, norm))
     return facility_pages, quality_pages
+
+
+def _num(s):
+    """從字串抽第一個浮點數, 失敗回 None。
+
+    例: "1.69(公\\n尺)" → 1.69
+        "(公尺)" → None
+        "2.305\\n(公尺)" → 2.305
+    """
+    if s is None:
+        return None
+    m = re.search(r"\d+(?:\.\d+)?", str(s))
+    if m:
+        try:
+            return float(m.group())
+        except ValueError:
+            return None
+    return None
+
+
+def extract_unit_size(page):
+    """從 pdfplumber page 物件抽單元尺寸 (用 extract_tables, 比 regex 純文字穩)。
+
+    處理設施資料表的 (一) 區塊有一個 8 欄表:
+        材質 | 長/直徑 | 寬 | 高 | 有效水深 | 有效容量 | 數量 | 其他
+
+    PDF 表格的「值列」會散在不同欄, 而且常含換行/單位字串, 用 _num() 容錯抽。
+
+    Returns:
+        dict {"材質": "塑膠", "長/直徑": 1.69, "寬": ..., ...} 或 {} (沒找到)
+    """
+    try:
+        tables = page.extract_tables()
+    except Exception:
+        return {}
+
+    for tbl in tables:
+        # 找含「單元尺寸」表頭的表
+        # tbl 是 list of rows, 每 row 是 list of cell str
+        # 表頭通常是 ['材質', '單元尺寸', None, ...] 或 [None, '長/直徑', '寬', '高', '有效水深', '有效容量', '數量', '其他']
+        header_idx = None
+        for ri, row in enumerate(tbl):
+            row_str = " ".join(str(c or "") for c in row)
+            if "長/直徑" in row_str and "有效容量" in row_str:
+                header_idx = ri
+                break
+        if header_idx is None:
+            continue
+
+        # 表頭 + 1 = 資料列
+        if header_idx + 1 >= len(tbl):
+            continue
+        data_row = tbl[header_idx + 1]
+        if len(data_row) < 8:
+            continue
+
+        # 8 欄: 材質, 長/直徑, 寬, 高, 有效水深, 有效容量, 數量, 其他
+        size = {}
+        material_raw = data_row[0]
+        if material_raw:
+            # "ˇ塑膠" → "塑膠"; 去 v/ˇ 勾選符號
+            m = re.sub(r"[ˇvVˆ✓☑]", "", str(material_raw)).strip()
+            if m:
+                size["材質"] = m
+
+        # 數值欄位 (用 _num 容錯抽)
+        FIELD_MAP = {
+            1: "長/直徑",
+            2: "寬",
+            3: "高",
+            4: "有效水深",
+            5: "有效容量",
+            6: "數量",
+        }
+        for col_idx, field in FIELD_MAP.items():
+            val = _num(data_row[col_idx]) if col_idx < len(data_row) else None
+            if val is not None:
+                size[field] = val
+
+        # 其他 (字串, 整列原文)
+        if len(data_row) > 7 and data_row[7]:
+            other = str(data_row[7]).strip()
+            if other:
+                size["其他"] = other
+
+        if size:
+            return size
+
+    return {}
 
 
 def parse_facility_page(text, page_index):
@@ -393,17 +486,28 @@ def extract_application(pdf_path, verbose=True):
             print(f"  處理設施資料表: {len(facility_pages)} 頁")
             print(f"  進出水質資料: {len(quality_pages)} 頁")
 
-        # 解析設施資料表 → 取單元 metadata + 設計/量測/機具
-        for page_idx, text in facility_pages:
+        # 解析設施資料表 → 取單元 metadata + 設計/量測/機具 + 尺寸
+        for page_idx, text, page_obj in facility_pages:
             unit = parse_facility_page(text, page_idx)
             if unit:
                 code = unit["raw_code"]
+                # 從表格抽單元尺寸 (材質 / 長/直徑 / 寬 / 高 / 有效水深 / 有效容量 / 數量)
+                try:
+                    size_info = extract_unit_size(page_obj)
+                except Exception:
+                    size_info = {}
+                if size_info:
+                    unit["size"] = size_info
+
                 if code in units:
                     # 已存在:合併 (有時跨頁)
                     units[code]["pages_found"].append(page_idx + 1)
                     units[code]["design_params"].update(unit["design_params"])
                     units[code]["measure_params"].update(unit["measure_params"])
                     units[code]["equipment"].extend(unit["equipment"])
+                    # 尺寸: 只在原本沒有時填入 (避免覆蓋已抽到的)
+                    if size_info and not units[code].get("size"):
+                        units[code]["size"] = size_info
                 else:
                     units[code] = unit
 

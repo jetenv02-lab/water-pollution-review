@@ -202,6 +202,32 @@ def build_unit_excel(app_data):
         ws.cell(row=row, column=1, value=f"標準類型: {info.get('std_tank', '')} | 代碼: {info.get('code_id', '')} | 頁: {info.get('pages_found', [])}")
         row += 2
 
+        # 單元尺寸
+        size_info = info.get("size") or {}
+        if size_info:
+            ws.cell(row=row, column=1, value="單元尺寸").font = Font(bold=True, color="2F5496")
+            row += 1
+            _size_keys = ["材質", "長/直徑", "寬", "高", "有效水深", "有效容量", "數量", "其他"]
+            _units_lookup = {
+                "長/直徑": "公尺", "寬": "公尺", "高": "公尺",
+                "有效水深": "公尺", "有效容量": "m³", "數量": "座",
+            }
+            ws.cell(row=row, column=1, value="項目")
+            ws.cell(row=row, column=2, value="值")
+            ws.cell(row=row, column=3, value="單位")
+            for c in range(1, 4):
+                ws.cell(row=row, column=c).fill = HEADER_FILL
+                ws.cell(row=row, column=c).font = HEADER_FONT
+            row += 1
+            for k in _size_keys:
+                if k not in size_info:
+                    continue
+                ws.cell(row=row, column=1, value=k)
+                ws.cell(row=row, column=2, value=size_info[k])
+                ws.cell(row=row, column=3, value=_units_lookup.get(k, ""))
+                row += 1
+            row += 1
+
         # 設計參數
         if info.get("design_params"):
             ws.cell(row=row, column=1, value="設計操作參數").font = Font(bold=True, color="2F5496")
@@ -1498,6 +1524,26 @@ with tab1:
                 st.markdown(f"**標準類型**: {unit['std_tank']}")
                 st.markdown(f"**內部代碼**: {unit.get('code_id', '')}")
                 st.markdown(f"**出現頁數**: {unit['pages_found']}")
+
+                # 單元尺寸 (材質 / 長/直徑 / 寬 / 高 / 有效水深 / 有效容量 / 數量)
+                size_info = unit.get("size") or {}
+                if size_info:
+                    # 用 markdown 列點顯示, 有效容量 + 有效水深 用粗體 (學理計算最常用)
+                    st.markdown("**單元尺寸**:")
+                    _size_order = ["材質", "長/直徑", "寬", "高", "有效水深", "有效容量", "數量", "其他"]
+                    _units_map = {
+                        "長/直徑": "公尺", "寬": "公尺", "高": "公尺",
+                        "有效水深": "公尺", "有效容量": "m³", "數量": "座",
+                    }
+                    for k in _size_order:
+                        if k not in size_info:
+                            continue
+                        v = size_info[k]
+                        unit_label = _units_map.get(k, "")
+                        if k in ("有效容量", "有效水深"):
+                            st.markdown(f"- **{k}**: `{v}` {unit_label}")
+                        else:
+                            st.markdown(f"- {k}: `{v}` {unit_label}")
             with c2:
                 if unit.get("design_params"):
                     st.markdown("**設計操作參數**:")
