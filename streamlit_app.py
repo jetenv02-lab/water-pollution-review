@@ -1561,6 +1561,49 @@ with tab1:
                            for e in unit["equipment"]]
                 st.dataframe(eq_rows, width="stretch", hide_index=True)
 
+            # ── 本單元審查發現摘要 ──
+            # 從全廠 findings 篩出這個 selected 單元的, 上方紅黃綠 + 詳列
+            _all_findings = st.session_state.get("_check_findings") or []
+            unit_findings = [f for f in _all_findings if f.get("單元") == selected]
+            st.divider()
+            if unit_findings:
+                from collections import Counter as _Counter
+                _sev = _Counter(f.get("嚴重度", "?") for f in unit_findings)
+                _type = _Counter(f.get("類型", "?") for f in unit_findings)
+
+                # 上方三張卡片
+                _cf1, _cf2, _cf3 = st.columns(3)
+                _cf1.metric("📋 本單元發現", len(unit_findings))
+                _cf2.metric("🔴 不合理", _sev.get("不合理", 0))
+                _cf3.metric("🟡 待人工", _sev.get("待人工", 0))
+
+                # 詳細列表 (依嚴重度排序, 不合理在前)
+                _sev_priority = {"不合理": 0, "待人工": 1, "錯誤": 2}
+                unit_findings_sorted = sorted(
+                    unit_findings,
+                    key=lambda f: (_sev_priority.get(f.get("嚴重度"), 9), f.get("類型", "")),
+                )
+                with st.expander(
+                    f"🔍 **本單元審查發現** ({len(unit_findings)} 筆) — "
+                    + " · ".join(f"{k} {v}" for k, v in _type.most_common()),
+                    expanded=True,
+                ):
+                    for f in unit_findings_sorted:
+                        sev = f.get("嚴重度", "?")
+                        emoji = {"不合理": "🔴", "待人工": "🟡", "錯誤": "⚪"}.get(sev, "⚪")
+                        with st.container(border=True):
+                            st.markdown(
+                                f"{emoji} **{f.get('類型', '?')}** · {f.get('對照項目', '?')}"
+                            )
+                            st.caption(str(f.get("描述", "")))
+                            if f.get("依據"):
+                                st.caption(f"📌 依據: {f['依據']}")
+            else:
+                # 沒發現問題, 給綠色提示
+                if _all_findings:  # 有跑過審查
+                    st.success(f"✅ **本單元無審查發現** — 此單元沒有被任何學理規則 / 規則庫條目觸發")
+                # 如果整份還沒跑審查, 不顯示 (避免誤導)
+
             # ── 反推 Q 對照表 (主要來源) + 示意圖解析 Q (驗算用) ──
             # 主來源: step2 抽取階段已從「質量÷濃度×1000」反推, 覆蓋率 100%
             # 驗算: 示意圖解析 (Gemini Vision) 跑完後可比對, 不一致就標 ⚠️
