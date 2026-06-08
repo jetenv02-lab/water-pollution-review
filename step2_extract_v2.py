@@ -268,6 +268,125 @@ def extract_unit_size(page):
     return {}
 
 
+def _parse_params_section(section_text):
+    """解析 (二)/(三) 操作參數區, 處理「PDF 把一筆參數拆成 2-3 行」的常見問題。
+
+    PDF 表格的單一儲存格如果太長 (例如「加藥量(H2SO4（45%）)」), pdfplumber
+    抽出來會變成多行:
+        加藥量(H2SO4（45        1次/         ← 行 A: 名稱開頭 + 頻率開頭
+        05 10.81～ 108.072 [075]公斤／日 依藥劑桶液位差    ← 行 B: 數值列
+        ％）) 日                                            ← 行 C: 名稱結尾 + 頻率結尾
+
+    策略: 先找「數值列」(代碼 + 範圍), 再回推「名稱列」(往前找到沒被吃掉的中文文字),
+    然後組合成 (name, info) 對。
+
+    Returns: list of (param_name, {"min": float, "max": float, "raw": str})
+    """
+    results = []
+    lines = [ln.rstrip() for ln in section_text.split("\n")]
+
+    # 數值列特徵: 開頭就是「2位數代碼 + 數字 ~ 數字 + [3位數]單位」
+    # 例: "05 10.81～ 108.072 [075]公斤／日 依藥劑桶液位差"
+    value_pattern = re.compile(
+        r"^(\d{2})\s+(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)\s+\[(\d+)\](.+)$"
+    )
+    # 表頭關鍵字 — 用來跳過
+    header_kw = ("處理單元", "屬處理設施", "數值", "操作參數",
+                 "設計參數名稱", "量測參數名稱", "最小值", "最大值", "代碼", "單位")
+
+    used = set()  # 已被「組合進某筆」的行 index, 避免重複用
+
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or i in used:
+            continue
+
+        # Case 1: 整行就符合 (名稱 + 數值都在同一行)
+        # 例: "pH值 03 6～ 9 [000]無單位 pH計"
+        m_full = PARAM_LINE_PATTERN.match(s)
+        if m_full:
+            pname = m_full.group(1).strip()
+            # 跳過表頭
+            if any(kw in pname for kw in header_kw):
+                continue
+            pmin, pmax = m_full.group(3), m_full.group(4)
+            tail = m_full.group(6).strip()
+            results.append((pname, {
+                "min": float(pmin), "max": float(pmax),
+                "raw": f"{pmin}~{pmax} {tail}",
+            }))
+            used.add(i)
+            continue
+
+        # Case 2: 只有「數值列」(以代碼開頭) → 名稱在前面幾行
+        mv = value_pattern.match(s)
+        if not mv:
+            continue
+
+        pmin, pmax = mv.group(2), mv.group(3)
+        unit_part = mv.group(5).strip()
+
+        # 往前找名稱: 跳過表頭關鍵字, 取「有中文且不是表頭」的最近 1-2 行組合
+        name_parts = []
+        j = i - 1
+        # 名稱可能跨 2 行 (行 A: 名稱開頭, 行 C: 名稱結尾)
+        # 但行 C 通常在數值列「後面」, 不是前面 → 改成往後找
+        # 結構: 行 A (前) → 行 B (數值, 當前 i) → 行 C (後)
+        while j >= 0 and len(name_parts) < 1:
+            prev = lines[j].strip()
+            if not prev or j in used:
+                j -= 1
+                continue
+            if any(kw in prev for kw in header_kw):
+                break
+            # 不要把上一筆數值列拿來
+            if value_pattern.match(prev) or PARAM_LINE_PATTERN.match(prev):
+                break
+            # 找到含中文的有效行
+            if re.search(r"[\u4e00-\u9fff]", prev):
+                name_parts.append((j, prev))
+                used.add(j)
+                break
+            j -= 1
+
+        # 往後找可能的「名稱結尾」(例: "％）) 日")
+        if i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            # 結尾特徵: 含「)」「）」「日」「％」, 但**不**含「代碼」或數值範圍
+            if (nxt and not value_pattern.match(nxt)
+                    and not any(kw in nxt for kw in header_kw)
+                    and re.search(r"[)）％]", nxt)
+                    and len(nxt) < 20):
+                name_parts.append((i + 1, nxt))
+                used.add(i + 1)
+
+        if not name_parts:
+            continue
+
+        # 組合名稱: 行 A + 行 C (去掉常見尾巴「日」「1次/」)
+        # 重組原則: 把所有 name_parts 連起來, 去除尾部頻率字眼
+        name_parts.sort(key=lambda x: x[0])
+        combined = "".join(p[1] for p in name_parts)
+        # 移除「N次/日」「日」這種頻率字眼 (它們是別欄的)
+        combined = re.sub(r"\d+\s*次\s*/\s*日?", "", combined)
+        combined = re.sub(r"[ \t]+", "", combined)
+        # 結尾的孤立「日」也去掉
+        combined = re.sub(r"日$", "", combined).strip()
+
+        if any(kw in combined for kw in header_kw):
+            continue
+        if not combined:
+            continue
+
+        results.append((combined, {
+            "min": float(pmin), "max": float(pmax),
+            "raw": f"{pmin}~{pmax} {unit_part}",
+        }))
+        used.add(i)
+
+    return results
+
+
 def parse_facility_page(text, page_index):
     """解析一頁『處理設施資料表』，回傳 unit dict 或 None。"""
     # 找單元表頭
@@ -302,29 +421,13 @@ def parse_facility_page(text, page_index):
 
     # (二) 設計操作參數
     if "二" in section_map:
-        for ln in section_map["二"].split("\n"):
-            mp = PARAM_LINE_PATTERN.match(ln.strip())
-            if mp:
-                pname = mp.group(1).strip()
-                pmin, pmax = mp.group(3), mp.group(4)
-                tail = mp.group(6).strip()
-                unit["design_params"][pname] = {
-                    "min": float(pmin), "max": float(pmax),
-                    "raw": f"{pmin}~{pmax} {tail}"
-                }
+        for pname, pinfo in _parse_params_section(section_map["二"]):
+            unit["design_params"][pname] = pinfo
 
     # (三) 量測操作參數
     if "三" in section_map:
-        for ln in section_map["三"].split("\n"):
-            mp = PARAM_LINE_PATTERN.match(ln.strip())
-            if mp:
-                pname = mp.group(1).strip()
-                pmin, pmax = mp.group(3), mp.group(4)
-                tail = mp.group(6).strip()
-                unit["measure_params"][pname] = {
-                    "min": float(pmin), "max": float(pmax),
-                    "raw": f"{pmin}~{pmax} {tail}"
-                }
+        for pname, pinfo in _parse_params_section(section_map["三"]):
+            unit["measure_params"][pname] = pinfo
 
     # (四) 機具設施
     if "四" in section_map:
