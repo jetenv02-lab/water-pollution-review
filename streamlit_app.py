@@ -417,13 +417,39 @@ _now_ts = _time_busy.time()
 # 上次 rerun 不是審查本身, 但 _busy=True → 中斷殘留, 自動解鎖
 if st.session_state.get("_busy", False):
     _bid = st.session_state.get("_busy_run_id", 0)
-    # 5 分鐘內視為「真正在跑」, 超過就當作殘留
-    # (註: 一旦使用者點了「🛑 停止審查」按鈕, rerun 進來這條會走 cancel 分支)
-    if _now_ts - _bid > 300:
+    _bkind = st.session_state.get("_busy_kind", "")
+    _pdf_name_check = st.session_state.get("_pdf_filename", "")
+
+    # zombie 偵測 (立刻解鎖):
+    # - 主審查標 busy 但 _pdf_filename 是空的 → 一定是掛了 (主審查最先存檔名)
+    # - _busy_run_id=0 (從來沒寫過) 但 _busy=True
+    is_zombie = (
+        (_bkind == "main" and not _pdf_name_check)
+        or (_bid == 0)
+    )
+
+    # 超時 (180 秒, 主審查正常 ~2-3 分鐘, 跑示意圖 +30 秒)
+    is_timeout = (_now_ts - _bid) > 180
+
+    if is_zombie or is_timeout:
         st.session_state["_busy"] = False
         st.session_state.pop("_busy_run_id", None)
         st.session_state.pop("_busy_kind", None)
-        st.warning("⚠️ 偵測到上次審查被中途中斷,已解鎖。請重新點「開始完整審查」。")
+        reason = "(偵測到無檔名的殘留狀態)" if is_zombie else "(超過 180 秒未完成)"
+        st.warning(f"⚠️ 偵測到上次審查被中途中斷, 已自動解鎖 {reason}。請重新點「開始完整審查」。")
+    else:
+        # 還在合理時間內, 提供「手動解鎖」按鈕讓使用者可主動恢復
+        _elapsed = int(_now_ts - _bid)
+        cu1, cu2 = st.columns([4, 1])
+        with cu1:
+            st.info(f"⏳ 審查進行中 (已 {_elapsed} 秒)。若實際已停止, 可點右邊按鈕強制解鎖。")
+        with cu2:
+            if st.button("🔓 強制解鎖", key="_force_unlock_top"):
+                st.session_state["_busy"] = False
+                st.session_state.pop("_busy_run_id", None)
+                st.session_state.pop("_busy_kind", None)
+                st.session_state.pop("_cancel_requested", None)
+                st.rerun()
 
 # 若使用者點過停止鈕 → 顯示已停止
 if st.session_state.pop("_cancel_just_done", False):
