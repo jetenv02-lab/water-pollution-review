@@ -334,6 +334,122 @@ def check_required_equipment(unit):
     return findings
 
 
+def check_design_metrics(unit):
+    """檢查設計參數體檢: HRT / SOR / G 值 是否在學理範圍。
+
+    從 step3h_design_metrics 算指標, 從 tank_chemistry 規則表取學理範圍。
+    """
+    findings = []
+    try:
+        import step3h_design_metrics as _m
+        import tank_chemistry as _tc
+    except Exception:
+        return findings
+
+    rule = _tc.get_rule_for_unit(unit)
+    if not rule:
+        return findings
+
+    code = unit.get("raw_code") or unit.get("code") or "?"
+    std_tank = rule["標準槽體"]
+
+    metrics = _m.compute_all_metrics(unit)
+    hrt = metrics["hrt_hr"]
+    sor = metrics["sor_m3_m2_d"]
+    g = metrics["g_value_s_inv"]
+    is_lamella = metrics["is_lamella"]
+    sev = rule.get("嚴重度") or "待人工"
+
+    # ── HRT 檢查 ──
+    hrt_min = rule.get("HRT_min")
+    hrt_max = rule.get("HRT_max")
+    if hrt is not None and (hrt_min or hrt_max):
+        hrt_min_v = hrt_min if hrt_min is not None else 0
+        hrt_max_v = hrt_max if hrt_max is not None else float("inf")
+        if hrt < hrt_min_v or hrt > hrt_max_v:
+            direction = "過短" if hrt < hrt_min_v else "過長"
+            findings.append({
+                "嚴重度": sev,
+                "類型": "設計參數",
+                "單元": code,
+                "標準槽體": std_tank,
+                "對照項目": "水力停留時間 (HRT)",
+                "描述": (
+                    f"HRT = {hrt:.3f} hr ({hrt*60:.1f} 分鐘), {direction}。"
+                    f"學理範圍 {hrt_min_v} ~ {hrt_max_v} hr。"
+                    f"(V={metrics['volume_m3']:.2f} m³, Q={metrics['main_q_cmd']:.1f} CMD)"
+                ),
+                "依據": "_槽體學理 HRT 範圍 + 環工設計準則",
+            })
+
+    # ── SOR 檢查 (沉澱類) ──
+    sor_max = rule.get("SOR_max")
+    if sor is not None and sor_max:
+        # 斜板池: SOR 上限放寬 (但有提醒)
+        effective_max = sor_max
+        sor_note = ""
+        if is_lamella:
+            effective_max = sor_max * 2.4  # 50 → 120
+            sor_note = " (已偵測斜板, 上限放寬)"
+        if sor > effective_max:
+            findings.append({
+                "嚴重度": sev,
+                "類型": "設計參數",
+                "單元": code,
+                "標準槽體": std_tank,
+                "對照項目": "表面溢流率 (SOR)",
+                "描述": (
+                    f"SOR = {sor:.1f} m³/m²·d, 超過學理上限 {effective_max:.0f}{sor_note}。"
+                    f" 顆粒沉降速度可能跟不上水面上升, SS 會被沖走。"
+                    f" (Q={metrics['main_q_cmd']:.1f} CMD, A={metrics['surface_area_m2']:.2f} m²)"
+                ),
+                "依據": "_槽體學理 SOR 範圍 + 環工設計準則",
+            })
+
+    # ── G 值檢查 (混合槽類) ──
+    g_min = rule.get("G_min")
+    g_max = rule.get("G_max")
+    if g is not None and (g_min or g_max):
+        g_min_v = g_min if g_min is not None else 0
+        g_max_v = g_max if g_max is not None else float("inf")
+        if g < g_min_v or g > g_max_v:
+            direction = "過低" if g < g_min_v else "過高"
+            warn_extra = ""
+            if g > g_max_v and "慢混" in std_tank:
+                warn_extra = " (慢混 G 過高會打散絮羽, 沉澱失敗)"
+            findings.append({
+                "嚴重度": sev,
+                "類型": "設計參數",
+                "單元": code,
+                "標準槽體": std_tank,
+                "對照項目": "G 值 (速度梯度)",
+                "描述": (
+                    f"G = {g:.0f} s⁻¹, {direction}。"
+                    f"學理範圍 {g_min_v} ~ {g_max_v} s⁻¹。{warn_extra}"
+                    f" (P={metrics['motor_power_w']:.0f} W, V={metrics['volume_m3']:.2f} m³)"
+                ),
+                "依據": "_槽體學理 G 值範圍 + 環工設計準則",
+            })
+
+    return findings
+
+
+def check_fast_slow_hrt_ratio(app_data):
+    """檢查快混 → 慢混的 HRT 比例 (跨單元檢查)。"""
+    findings = []
+    try:
+        import step3h_design_metrics as _m
+    except Exception:
+        return findings
+
+    pairs = _m.find_fast_slow_pairs(app_data)
+    for fast_code, slow_code in pairs:
+        result = _m.check_fast_slow_ratio(app_data, fast_code, slow_code)
+        if result:
+            findings.append(result)
+    return findings
+
+
 def check_quality_table_consistency(unit):
     """檢查: 進/出流水質表的「質量÷濃度」反推 Q 應在 19 項間一致。
 
@@ -381,10 +497,11 @@ def run_balance_checks(app_data):
     checkers = [
         check_dissolved_concentration_up,
         check_fast_mix_metal_removal,
-        check_tank_chemistry,            # 新版: 27 條槽體學理規則 (規則庫驅動)
+        check_tank_chemistry,            # 槽體學理規則 (規則庫驅動)
         check_settling_overflow_rate,
         check_required_equipment,
-        check_quality_table_consistency, # 新: 水質表 Q 反推一致性
+        check_quality_table_consistency, # 水質表 Q 反推一致性
+        check_design_metrics,            # 新: HRT / SOR / G 值體檢
     ]
     for code, unit in app_data.get("units", {}).items():
         for checker in checkers:
@@ -401,6 +518,20 @@ def run_balance_checks(app_data):
                     "描述": f"檢查器錯誤: {e}",
                     "依據": "(內部)",
                 })
+
+    # 跨單元檢查: 快/慢混 HRT 比例
+    try:
+        findings.extend(check_fast_slow_hrt_ratio(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤",
+            "類型": "系統",
+            "單元": "(跨單元)",
+            "標準槽體": "",
+            "對照項目": "check_fast_slow_hrt_ratio",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
     return findings
 
 

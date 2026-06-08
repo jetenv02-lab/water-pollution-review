@@ -1561,6 +1561,84 @@ with tab1:
                            for e in unit["equipment"]]
                 st.dataframe(eq_rows, width="stretch", hide_index=True)
 
+            # ── 設計參數體檢卡片 (HRT / SOR / G 值) ──
+            try:
+                import step3h_design_metrics as _dm
+                import tank_chemistry as _tc
+                _metrics = _dm.compute_all_metrics(unit)
+                _rule = _tc.get_rule_for_unit(unit)
+            except Exception:
+                _metrics = None
+                _rule = None
+
+            if _metrics and _rule:
+                st.divider()
+                st.markdown("##### ⚙️ 設計參數體檢")
+
+                def _verdict(value, vmin, vmax, unit_str):
+                    """回 (display_str, delta_str, delta_color) — 給 st.metric 用。"""
+                    if value is None:
+                        return ("—", "(無法計算)", "off")
+                    val_str = f"{value:.3f}" if value < 1 else f"{value:.1f}"
+                    if vmin is None and vmax is None:
+                        return (f"{val_str} {unit_str}", "(不檢查)", "off")
+                    v_min = vmin if vmin is not None else 0
+                    v_max = vmax if vmax is not None else float("inf")
+                    range_str = (
+                        f"{vmin or '-'} ~ {vmax or '∞'}" if vmin or vmax
+                        else "(不檢查)"
+                    )
+                    if v_min <= value <= v_max:
+                        return (f"{val_str} {unit_str}", f"✅ 範圍 {range_str}", "normal")
+                    elif value < v_min:
+                        return (f"{val_str} {unit_str}", f"⚠️ 過低 (應 ≥ {vmin})", "inverse")
+                    else:
+                        return (f"{val_str} {unit_str}", f"⚠️ 過高 (應 ≤ {vmax})", "inverse")
+
+                mc1, mc2, mc3 = st.columns(3)
+
+                # HRT
+                hrt = _metrics["hrt_hr"]
+                hrt_disp, hrt_note, hrt_color = _verdict(
+                    hrt, _rule.get("HRT_min"), _rule.get("HRT_max"), "hr"
+                )
+                with mc1:
+                    st.metric("⏱ 水力停留時間 (HRT)", hrt_disp, hrt_note, delta_color=hrt_color)
+                    if hrt is not None:
+                        st.caption(f"= {hrt*60:.1f} 分鐘 (V={_metrics['volume_m3']:.2f} m³ ÷ Q={_metrics['main_q_cmd']:.1f} CMD × 24)")
+
+                # SOR
+                sor = _metrics["sor_m3_m2_d"]
+                sor_max = _rule.get("SOR_max")
+                if sor_max and _metrics["is_lamella"]:
+                    sor_max_disp = sor_max * 2.4
+                else:
+                    sor_max_disp = sor_max
+                sor_disp, sor_note, sor_color = _verdict(
+                    sor, None, sor_max_disp, "m³/m²·d"
+                )
+                with mc2:
+                    st.metric("🌊 表面溢流率 (SOR)", sor_disp, sor_note, delta_color=sor_color)
+                    if sor is not None:
+                        lam_tag = " · 斜板" if _metrics["is_lamella"] else ""
+                        st.caption(
+                            f"= Q={_metrics['main_q_cmd']:.1f} ÷ A={_metrics['surface_area_m2']:.2f} m²"
+                            f"{lam_tag}"
+                        )
+
+                # G 值
+                g = _metrics["g_value_s_inv"]
+                g_disp, g_note, g_color = _verdict(
+                    g, _rule.get("G_min"), _rule.get("G_max"), "1/s"
+                )
+                with mc3:
+                    st.metric("🔀 G 值 (速度梯度)", g_disp, g_note, delta_color=g_color)
+                    if g is not None and _metrics["motor_power_w"]:
+                        st.caption(
+                            f"= √(P={_metrics['motor_power_w']:.0f}W / "
+                            f"(μ×V={_metrics['volume_m3']:.2f}))"
+                        )
+
             # ── 本單元審查發現摘要 ──
             # 從全廠 findings 篩出這個 selected 單元的, 上方紅黃綠 + 詳列
             _all_findings = st.session_state.get("_check_findings") or []

@@ -161,13 +161,22 @@ def load_rules(xlsx_path=None):
     except Exception:
         return {}
 
+    def _to_float_or_none(v):
+        if v in (None, "", "-"):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     rules = {}
     for r in rows:
         if not r or not r[0]:
             continue
-        # 容錯: 欄數不夠就補 None
-        r = list(r) + [None] * (8 - len(r))
-        std_tank, dose, allow_raw, deny_raw, tol, sev, desc, status = r[:8]
+        # 容錯: 欄數不夠就補 None (現在 13 欄)
+        r = list(r) + [None] * (13 - len(r))
+        (std_tank, dose, allow_raw, deny_raw, tol, sev, desc, status,
+         hrt_min, hrt_max, sor_max, g_min, g_max) = r[:13]
 
         # 狀態為 "?" 視為「待討論, 暫不啟用」
         if status and str(status).strip() == "?":
@@ -189,6 +198,12 @@ def load_rules(xlsx_path=None):
             "嚴重度": str(sev or "待人工").strip(),
             "學理說明": str(desc or "").strip(),
             "狀態": str(status or "").strip(),
+            # 設計參數學理範圍 (新增)
+            "HRT_min": _to_float_or_none(hrt_min),
+            "HRT_max": _to_float_or_none(hrt_max),
+            "SOR_max": _to_float_or_none(sor_max),
+            "G_min": _to_float_or_none(g_min),
+            "G_max": _to_float_or_none(g_max),
         }
     return rules
 
