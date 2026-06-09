@@ -1005,7 +1005,21 @@ with tab1:
                         if "_flow_extract_result" not in st.session_state:
                             st.session_state["_flow_extract_result"] = None
 
-                        if st.button("🤖 開始解析", type="primary", key="_btn_flow_extract",
+                        # 若已有結果 → 顯示「✅ 已解析」, 按鈕變成「🔄 重抽」
+                        _existing_fr = st.session_state.get("_flow_extract_result")
+                        if _existing_fr and _existing_fr.get("ok"):
+                            _btn_label = "🔄 重新解析 (重抽 Gemini)"
+                            _summary_n_flows = len(_existing_fr.get("all_flows", []))
+                            _summary_n_units = len(_existing_fr.get("all_units", []))
+                            st.success(
+                                f"✅ 已解析: 處理 {_existing_fr.get('pages_processed', 0)} 張 / "
+                                f"{_summary_n_units} 單元 / {_summary_n_flows} 流向 — "
+                                f"結果已套用到上方各單元的「Q (示意圖解析)」"
+                            )
+                        else:
+                            _btn_label = "🤖 開始解析"
+
+                        if st.button(_btn_label, type="primary", key="_btn_flow_extract",
                                      width="stretch",
                                      disabled=st.session_state.get("_busy", False)):
                             # 跟主審查一樣套全頁 overlay, 讓使用者明確知道「系統正在跑」
@@ -1656,8 +1670,14 @@ with tab1:
                         else:
                             st.caption("(無偵測到下游, 可能是放流口或未串接)")
 
-                    # 提示: 沒跑示意圖解析 → 不會看到 WM / D
-                    if not _fr or not _fr.get("ok"):
+                    # 提示: 沒跑示意圖解析 + PDF 也沒抽到 WM 資料 → 才顯示提示
+                    # (現在主流程會抽 PDF「參、第六項 原廢水」, 通常 raw_water 都會有)
+                    _has_wm_or_d = (
+                        bool(app_data.get("raw_water"))
+                        or bool(app_data.get("discharge"))
+                        or (_fr and _fr.get("ok"))
+                    )
+                    if not _has_wm_or_d:
                         st.info(
                             "💡 想看「原廢水 WMxx → 本單元」「本單元 → 放流口 Dxx」的連結? "
                             "請開啟「📊 水量平衡示意圖解析」(Step 4) 跑 Gemini Vision 解析。"

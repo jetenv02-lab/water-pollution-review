@@ -20,6 +20,7 @@
 """
 import os
 import csv
+import re
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "discharge_standards.csv")
 
@@ -131,7 +132,6 @@ def check_discharge_standard(app_data, business_type=None):
                     if not rng:
                         continue
                     # 解析 "6~9" 之類
-                    import re
                     m = re.match(r"\s*(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)", str(rng))
                     if m:
                         lo, hi = float(m.group(1)), float(m.group(2))
