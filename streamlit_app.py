@@ -1522,14 +1522,75 @@ with tab1:
                 upstream = list(nb.get("upstream", []))
                 downstream = list(nb.get("downstream", []))
 
-                # 補上示意圖解析的 WM (原廢水) → 本單元 / 本單元 → D (放流口)
-                # 因為「進出水質表」只填 WTBxx-yy / WTAxx-yy, 不寫 WM / D
-                # 只有 Gemini Vision 讀「水量平衡示意圖」才會抽到
+                # 補上 WMxx (原廢水) → 本單元 / 本單元 → Dxx (放流口) 連結
+                # 來源優先順序:
+                #   1. PDF「參、第六項 原廢水水量水質資料」(step2_raw_water)
+                #      用「水質指紋」比對 → 配對「外部進入」的 WTBxx
+                #   2. 示意圖解析 (Gemini Vision) 補方向
+
+                # 來源 1: PDF WM 資料配對 — 取代「(外部進入)」這個含糊標籤
+                raw_water_dict = app_data.get("raw_water", {}) or {}
+                if raw_water_dict:
+                    # 找出 upstream 中 from_unit=="(外部進入)" 的 WTB 編號
+                    # 對每個用水質指紋配對 WM
+                    new_upstream = []
+                    for u in upstream:
+                        if u.get("from_unit") != "(外部進入)":
+                            new_upstream.append(u)
+                            continue
+                        wtb_code = u.get("to_stream", "")
+                        # 取這條 WTB 的水質
+                        infl_q = (unit.get("influent") or {}).get(wtb_code, {})
+                        # 跟每個 WM 比對 (簡單指紋: 3+ 項濃度匹配)
+                        matched_wm = None
+                        for wm_code, wm_data in raw_water_dict.items():
+                            wm_quality = wm_data.get("quality") or {}
+                            if not wm_quality or not isinstance(infl_q, dict):
+                                continue
+                            common = match = 0
+                            for item_name, wm_val in wm_quality.items():
+                                wm_key = item_name.replace(" ", "")
+                                for infl_item, infl_val_dict in infl_q.items():
+                                    if not isinstance(infl_val_dict, dict):
+                                        continue
+                                    if wm_key not in infl_item.replace(" ", ""):
+                                        continue
+                                    common += 1
+                                    try:
+                                        v1 = float(str(wm_val).replace("~", "-").split("-")[0].strip())
+                                        v2 = float(infl_val_dict.get("濃度", 0) or 0)
+                                        if v1 > 0 and abs(v1 - v2) / max(v1, v2) < 0.05:
+                                            match += 1
+                                    except (ValueError, TypeError):
+                                        pass
+                                    break
+                            if common >= 3 and match >= max(2, common * 0.6):
+                                matched_wm = wm_code
+                                break
+
+                        if matched_wm:
+                            wm_data = raw_water_dict[matched_wm]
+                            new_upstream.append({
+                                "from_unit": f"🌊 {matched_wm}",
+                                "from_stream": matched_wm,
+                                "to_stream": wtb_code,
+                                "confidence": "高",
+                                "method": "PDF 原廢水水質指紋",
+                                "_source": "pdf_wm",
+                                "_q_cmd": wm_data.get("q_cmd"),
+                                "_sources": wm_data.get("sources", []),
+                            })
+                        else:
+                            new_upstream.append(u)  # 保留原本的 (外部進入)
+                    upstream = new_upstream
+
+                # 來源 2: 示意圖解析 (補沒被 PDF 配對到的)
                 _fr = st.session_state.get("_flow_extract_result")
                 if _fr and _fr.get("ok"):
-                    # WMxx → 本單元 (補進上游)
+                    existing_wm = {str(u.get("from_stream", "")) for u in upstream}
+                    existing_d = {str(d.get("to_stream", "")) for d in downstream}
                     for ei in _fr.get("all_external_inputs", []) or []:
-                        if ei.get("to_unit") == selected:
+                        if ei.get("to_unit") == selected and ei.get("code") not in existing_wm:
                             upstream.append({
                                 "from_unit": f"🌊 {ei.get('code', 'WM?')}",
                                 "from_stream": ei.get("code", "WM?"),
@@ -1540,9 +1601,8 @@ with tab1:
                                 "_extra_name": ei.get("name", ""),
                                 "_q_cmd": ei.get("Q_cmd"),
                             })
-                    # 本單元 → Dxx (補進下游)
                     for dp in _fr.get("all_discharge_points", []) or []:
-                        if dp.get("from_unit") == selected:
+                        if dp.get("from_unit") == selected and dp.get("code") not in existing_d:
                             downstream.append({
                                 "from_stream": dp.get("from_stream") or "(放流)",
                                 "to_unit": f"🏁 {dp.get('code', 'D?')}",

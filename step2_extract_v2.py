@@ -688,6 +688,19 @@ def extract_application(pdf_path, verbose=True):
         # 反推失敗不致命 — 主流程繼續, 沒 Q 而已
         result["stream_q_error"] = str(_q_err)
 
+    # 抽 WMxx (原廢水) 跟 Dxx (放流口) 資料
+    # 這在 PDF「參、第六項 原廢水水量水質資料」, 結構跟處理單元不同
+    # 不會跟 influent/effluent 衝突, 是獨立的全廠級資料
+    try:
+        import step2_raw_water as _srw
+        wm_d = _srw.extract_raw_water_and_discharge(pdf_path)
+        result["raw_water"] = wm_d.get("raw_water", {})
+        result["discharge"] = wm_d.get("discharge", {})
+    except Exception as _wm_err:
+        result["raw_water"] = {}
+        result["discharge"] = {}
+        result["raw_water_error"] = str(_wm_err)
+
     return result
 
 
