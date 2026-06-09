@@ -217,6 +217,21 @@ def check_q_balance(app_data):
 
     SLUDGE_KW = ["污泥", "脫水", "濃縮"]
 
+    # 預先建立「stream_code → 來源單元」對照 (用於追溯上游)
+    # 例: WTB01-22-1 來自 T01-21 的某條出流
+    stream_origin = {}  # WTB → 來源 T 單元
+    for u_code, u in units.items():
+        for s_code in (u.get("effluent") or {}).keys():
+            # WTA01-22-1 來自 T01-22
+            mm = None
+            import re
+            mm = re.match(r"^WTA(\d{2})[-－](\d{2})", s_code)
+            if mm:
+                stream_origin[s_code] = f"T{mm.group(1)}-{mm.group(2)}"
+
+    # 統計「每個單元有幾條出流」, 用於判斷下游是否該豁免
+    unit_out_count = {u_code: len(u.get("effluent") or {}) for u_code, u in units.items()}
+
     for code, unit in units.items():
         name = unit.get("name_in_doc", "") + " " + (unit.get("std_tank") or "")
         # 污泥相關單元: 跳過 (進出 Q 本來就不等)
@@ -235,11 +250,26 @@ def check_q_balance(app_data):
         sum_out = 0.0
         count_in = 0
         count_out = 0
+        # 追蹤本單元進流的上游, 看上游是否有多出流 (若是, 本單元的 Q 可能不全)
+        upstream_has_split = False
+        upstream_units_seen = set()
         for code_s, items in influent.items():
             qres = stream_q.get(code_s, {})
             if qres.get("ok"):
                 sum_in += qres.get("q_cmd", 0)
                 count_in += 1
+            # 對應的 WTA 上游
+            # 本單元的 WTB01-22-1 對應上游的 WTA01-22-1 嗎? 不是. 是水質指紋去配對.
+            # 用流量圖 (build_flow_graph) 可知道對應的 from_unit
+            # 但 check_q_balance 沒拿到 flow_graph
+            # 簡化: 用「stream_code 前綴」推測上游單元
+            mm = re.match(r"^WTB(\d{2})[-－](\d{2})", code_s)
+            if mm:
+                # WTB01-22-1 表示「T01-22 自己的進流」, 不是上游編號
+                # 真正的上游, 通常 stream_code 是 WTA 形式存在某單元的 effluent
+                # 但流向配對複雜, 簡化處理: 用 flow_graph 的方法不完整
+                pass
+
         for code_s, items in effluent.items():
             qres = stream_q.get(code_s, {})
             if qres.get("ok"):
@@ -249,7 +279,45 @@ def check_q_balance(app_data):
         if sum_in <= 0 or sum_out <= 0:
             continue
 
+        # 透過 flow_graph 判斷上游是否多出流
+        # 簡單做法: 看本單元進流數 vs 出流數, 若 進 < 出 (例如 1 進 2 出), 該單元自己分流,
+        # 它的下游應該豁免 ("水量相加")
+        # 但「本單元自己」進=1 出=1 也可能是被上游分流的後段
+        # 用全廠掃描: 看「同序列上一個單元」是否多出流
+        upstream_split = False
+        # T01-22 的上一個 (T01-21) 是否多出流?
+        mm_self = re.match(r"^T(\d{2})[-－](\d+)", code)
+        if mm_self:
+            prev_idx = int(mm_self.group(2)) - 1
+            if prev_idx > 0:
+                prev_code = f"T{mm_self.group(1)}-{prev_idx:02d}"
+                if unit_out_count.get(prev_code, 0) >= 2:
+                    upstream_split = True
+
         diff_pct = abs(sum_in - sum_out) / max(sum_in, sum_out) * 100
+
+        # 「自己有多出流」(本單元 effluent ≥ 2 條) 或 「上游有多出流」
+        # → 屬「水量分流結構」, 單條 Q 比對天生會差很多。
+        # 不產生 finding, 改寫進 unit["topology_notes"] 當備註讓 UI 顯示。
+        self_split = (count_out >= 2) or (len(effluent) >= 2)
+        if diff_pct > 5 and (self_split or upstream_split):
+            note_lines = unit.setdefault("topology_notes", [])
+            if self_split and upstream_split:
+                reason = "本單元有多條出流, 且上游也是分流結構"
+            elif self_split:
+                reason = "本單元有多條出流 (水量分流)"
+            else:
+                reason = "上游單元有多條出流, 本單元只承接其中一條"
+            direction = "多" if sum_in > sum_out else "少"
+            note_lines.append(
+                f"ℹ️ 拓樸提示: {reason}。"
+                f"Σ 進 Q = {sum_in:.2f} CMD ({count_in} 條), "
+                f"Σ 出 Q = {sum_out:.2f} CMD ({count_out} 條), "
+                f"進比出{direction} {diff_pct:.1f}%。"
+                f"分流結構下單條 Q 比對天生會差, 請看出流加總是否守恆。"
+            )
+            continue
+
         if diff_pct > 5:
             severity = "不合理" if diff_pct > 20 else "待人工"
             direction = "多" if sum_in > sum_out else "少"

@@ -359,6 +359,14 @@ with st.sidebar:
     if st.button("🔄 清快取重載", help="若顯示舊資料,點此清快取"):
         st.cache_data.clear()
         st.rerun()
+    if st.button("🔄 重新載入規則庫", help="改完 規則庫.xlsx 後, 點此讓系統重讀 _槽體學理 等規則表"):
+        try:
+            import tank_chemistry as _tc_reload
+            _tc_reload.clear_cache()
+            st.cache_data.clear()
+            st.success("規則庫快取已清除, 下次審查會重讀 規則庫.xlsx")
+        except Exception as _e:
+            st.error(f"重新載入失敗: {_e}")
     st.divider()
 
     # ───────── 本次瀏覽審查歷史 (重整頁面後即消失) ─────────
@@ -1683,6 +1691,13 @@ with tab1:
                             "請開啟「📊 水量平衡示意圖解析」(Step 4) 跑 Gemini Vision 解析。"
                         )
                     st.divider()
+
+            # 拓樸備註 (水量分流, 非異常)
+            _topo_notes = unit.get("topology_notes") or []
+            if _topo_notes:
+                with st.expander(f"ℹ️ 拓樸備註 ({len(_topo_notes)} 則) — 水量分流/匯流, 非異常", expanded=False):
+                    for _n in _topo_notes:
+                        st.markdown(f"- {_n}")
 
             c1, c2 = st.columns(2)
             with c1:

@@ -298,15 +298,23 @@ def check_unit(unit, rules=None):
         if isinstance(stream, dict):
             all_items.update(stream.keys())
 
+    # 是否為「分流結構」(本單元 effluent ≥ 2 條) — 用於濃度閘判斷
+    self_split = len(effluent) >= 2
+
     findings = []
     for item in sorted(all_items):
         cls = classify_item(item, rule)
         if cls != "不應變動":
             continue
 
-        # 算質量平衡
+        # 算質量平衡, 同時累加 質量 + 濃度×Q (用於加權平均濃度)
         in_mass = 0.0
         out_mass = 0.0
+        in_mass_for_conc = 0.0   # 進: Σ (濃度 × 質量) — 但這裡其實質量已含 Q 因素
+        in_q_sum = 0.0
+        out_q_sum = 0.0
+        in_conc_x_q = 0.0  # 進: Σ (濃度 × Q) — 用於算加權平均濃度
+        out_conc_x_q = 0.0
         in_has = False
         out_has = False
         for stream in influent.values():
@@ -315,18 +323,28 @@ def check_unit(unit, rules=None):
             v = stream.get(item)
             if isinstance(v, dict):
                 m = _to_float(v.get("質量"))
+                c = _to_float(v.get("濃度"))
+                q = _to_float(v.get("Q") or v.get("q") or v.get("q_cmd"))
                 if m is not None:
                     in_mass += m
                     in_has = True
+                if c is not None and q is not None and q > 0:
+                    in_conc_x_q += c * q
+                    in_q_sum += q
         for stream in effluent.values():
             if not isinstance(stream, dict):
                 continue
             v = stream.get(item)
             if isinstance(v, dict):
                 m = _to_float(v.get("質量"))
+                c = _to_float(v.get("濃度"))
+                q = _to_float(v.get("Q") or v.get("q") or v.get("q_cmd"))
                 if m is not None:
                     out_mass += m
                     out_has = True
+                if c is not None and q is not None and q > 0:
+                    out_conc_x_q += c * q
+                    out_q_sum += q
 
         if not (in_has and out_has and in_mass > 0):
             continue
@@ -334,6 +352,25 @@ def check_unit(unit, rules=None):
         diff_pct = abs(out_mass - in_mass) / in_mass * 100
         if diff_pct <= tol:
             continue  # 在容忍度內
+
+        # ── 加權平均濃度閘 ──
+        # 若本單元為「水量分流」, 質量看起來變化大但濃度其實沒變 → 跳過
+        # (技師備註: T01-21 慢混分流, 鋅濃度未改變, 但質量按 Σ 出/Σ 進看起來減 50%)
+        if self_split and in_q_sum > 0 and out_q_sum > 0:
+            in_avg_c = in_conc_x_q / in_q_sum
+            out_avg_c = out_conc_x_q / out_q_sum
+            if in_avg_c > 0:
+                conc_diff_pct = abs(out_avg_c - in_avg_c) / in_avg_c * 100
+                if conc_diff_pct <= max(tol, 5.0):
+                    # 濃度沒明顯變 → 水量分流造成的質量變化, 不算去除
+                    # 寫進 unit 的 topology_notes 當備註, 不產 finding
+                    note_lines = unit.setdefault("topology_notes", [])
+                    note_lines.append(
+                        f"ℹ️ 拓樸提示: {item} 進出加權平均濃度 "
+                        f"{in_avg_c:.2f} → {out_avg_c:.2f} (Δ {conc_diff_pct:.1f}%), "
+                        f"質量差異 {diff_pct:.1f}% 來自水量分流而非實際去除。"
+                    )
+                    continue
 
         direction = "減少" if out_mass < in_mass else "增加"
         findings.append({
