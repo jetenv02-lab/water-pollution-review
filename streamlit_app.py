@@ -1402,32 +1402,8 @@ with tab1:
         pdf_filename = st.session_state.get("_pdf_filename", "")
 
         st.success(f"✅ 抽取完成! 共 **{app_data['total_units']}** 個處理單元 · 來源: {pdf_filename}")
-
-        # PDF 上的「技師審查註解」總覽 (黃色便利貼)
-        _reviewer_notes = app_data.get("reviewer_notes") or []
-        if _reviewer_notes:
-            with st.expander(
-                f"📌 **PDF 上發現 {len(_reviewer_notes)} 筆技師審查註解** "
-                f"(出現在 {len(set(n.get('page') for n in _reviewer_notes))} 個頁面)",
-                expanded=False,
-            ):
-                st.caption(
-                    "這些是申請文件 PDF 上原本就有的「便利貼註解」, 是審查技師用 Acrobat / Foxit "
-                    "等 PDF 工具加上的疑問或修正建議。系統用 pypdf 抽出來給你彙整一次看完。"
-                    "切換單元詳細頁時, 系統會自動顯示與該單元頁數相關的註解。"
-                )
-                # 依頁排序
-                from collections import defaultdict
-                _by_page = defaultdict(list)
-                for n in _reviewer_notes:
-                    _by_page[n.get("page", 0)].append(n)
-                for pn in sorted(_by_page.keys()):
-                    for n in _by_page[pn]:
-                        author = n.get("author", "")
-                        author_tag = f" — {author}" if author and author != "user" else ""
-                        with st.container(border=True):
-                            st.markdown(f"📌 **頁 {pn}**{author_tag}")
-                            st.markdown(f"> {n.get('contents', '')}")
+        # 技師註解抽到後僅供「AI vs 人工比對」用, 不顯示總覽
+        # (註解仍在 app_data['reviewer_notes'], 供 AI/人工 recall 評估或單元詳細頁配對)
 
         # ───────── 章節動態定位區塊 ─────────
         st.subheader("📍 本文件章節定位")
