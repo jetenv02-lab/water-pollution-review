@@ -370,6 +370,56 @@ def run_advanced_checks(app_data, business_type=None):
             "依據": "(內部)",
         })
 
+    # 污泥質量平衡 (含水率 / 固形物濃度合理性)
+    try:
+        from check_sludge import run_sludge_checks
+        findings.extend(run_sludge_checks(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤", "類型": "系統", "單元": "(全廠)", "標準槽體": "",
+            "對照項目": "run_sludge_checks",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # 計算式反推驗算 (PDF 內 "÷ × CMD" 等計算式)
+    try:
+        from check_calc_verify import run_calc_verify
+        findings.extend(run_calc_verify(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤", "類型": "系統", "單元": "(全廠)", "標準槽體": "",
+            "對照項目": "run_calc_verify",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # 單位異常偵測 (溢流率 / HRT / 流量 / G 值 單位明顯錯誤)
+    try:
+        from check_unit_sanity import run_unit_sanity_checks
+        findings.extend(run_unit_sanity_checks(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤", "類型": "系統", "單元": "(全廠)", "標準槽體": "",
+            "對照項目": "run_unit_sanity_checks",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # 文件一致性 (跨頁數值 + 圖面缺失)
+    try:
+        from check_doc_consistency import run_doc_consistency_checks
+        # pdf_path 從 app_data 取得 (若有)
+        _pdf_p = app_data.get("source_pdf_path") or None
+        findings.extend(run_doc_consistency_checks(app_data, _pdf_p))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤", "類型": "系統", "單元": "(全廠)", "標準槽體": "",
+            "對照項目": "run_doc_consistency_checks",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
     return findings
 
 

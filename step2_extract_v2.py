@@ -730,6 +730,7 @@ def extract_application(pdf_path, verbose=True):
 
     result = {
         "source_pdf": os.path.basename(pdf_path),
+        "source_pdf_path": pdf_path,  # 給 check_doc_consistency 用
         "extracted_at": datetime.now().isoformat(),
         "total_units": len(units),
         "units": units,
