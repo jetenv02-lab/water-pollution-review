@@ -217,10 +217,13 @@ def extract_unit_size(page):
         # 找含「單元尺寸」表頭的表
         # tbl 是 list of rows, 每 row 是 list of cell str
         # 表頭通常是 ['材質', '單元尺寸', None, ...] 或 [None, '長/直徑', '寬', '高', '有效水深', '有效容量', '數量', '其他']
+        # 邑昇案 PDF 的表頭被換行: 「長/直\n徑」, 所以要去 \n 和空白後再 match
         header_idx = None
         for ri, row in enumerate(tbl):
-            row_str = " ".join(str(c or "") for c in row)
-            if "長/直徑" in row_str and "有效容量" in row_str:
+            row_str_raw = " ".join(str(c or "") for c in row)
+            # 去掉換行/空白 (PDF 可能把「長/直徑」拆成「長/直\n徑」)
+            row_str_clean = re.sub(r"\s+", "", row_str_raw)
+            if ("長/直徑" in row_str_clean or "長／直徑" in row_str_clean) and "有效容量" in row_str_clean:
                 header_idx = ri
                 break
         if header_idx is None:
