@@ -367,6 +367,24 @@ with st.sidebar:
             st.success("規則庫快取已清除, 下次審查會重讀 規則庫.xlsx")
         except Exception as _e:
             st.error(f"重新載入失敗: {_e}")
+    if st.button("📤 推送規則庫到 GitHub", help="把本地 規則庫.xlsx commit + push, Streamlit Cloud 會自動重新部署"):
+        try:
+            import subprocess as _sp
+            _r = _sp.run(['git', 'status', '--porcelain', '規則庫.xlsx'], capture_output=True, text=True, encoding='utf-8')
+            if not _r.stdout.strip():
+                st.info("📋 規則庫.xlsx 沒有變動, 不需推送。若你剛從 Google Sheets 改過, 請先用「📥 雲端規則庫管理」工具下載到本地。")
+            else:
+                _sp.run(['git', 'add', '規則庫.xlsx'], check=True)
+                import datetime as _dt
+                _msg = f"規則庫更新: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                _sp.run(['git', 'commit', '-m', _msg], check=True, capture_output=True, text=True, encoding='utf-8')
+                _pr = _sp.run(['git', 'push'], capture_output=True, text=True, encoding='utf-8')
+                if _pr.returncode == 0:
+                    st.success(f"✅ 已推送: {_msg}。Streamlit Cloud 將於 1~3 分鐘內自動重新部署。")
+                else:
+                    st.error(f"推送失敗: {_pr.stderr}")
+        except Exception as _e:
+            st.error(f"推送失敗: {_e}")
     st.divider()
 
     # ───────── 本次瀏覽審查歷史 (重整頁面後即消失) ─────────
