@@ -567,22 +567,35 @@ def parse_quality_page(text):
         unit_in_blk = m_unit.group(1).strip() if m_unit else None
 
         # 從進流編號反推真正的歸屬單元 (例: WTB01-01-6 → T01-01)
+        # 也支援從出流編號反推 (例: 邑昇 T01-21 有兩條出流, 第二條 PDF
+        # 寫成「進流: <空白>, 出流: WTA01-21-2」, 進流空無法反推 → 用出流反推)
         infl_implied_unit = None
         if infl_code:
             mm = re.match(r"^WT[AB](\d{2})[-－](\d{2})", infl_code)
             if mm:
                 infl_implied_unit = f"T{mm.group(1)}-{mm.group(2)}"
 
+        effl_implied_unit = None
+        if effl_code:
+            mm = re.match(r"^WT[AB](\d{2})[-－](\d{2})", effl_code)
+            if mm:
+                effl_implied_unit = f"T{mm.group(1)}-{mm.group(2)}"
+
         # 決定 current_unit 優先序:
         # 1. 進流編號隱含的單元 (最準, 直接綁定)
-        # 2. 上個 block 留下來的 pending_unit_for_next
-        # 3. block 內出現的 單元序號
-        # 4. 沿用之前的 current_unit
+        # 2. 出流編號隱含的單元 (進流空白時用, 例: 同單元第 2 條出流)
+        # 3. 上個 block 留下來的 pending_unit_for_next
+        # 4. block 內出現的 單元序號
+        # 5. 沿用之前的 current_unit
         new_pending = None
         if infl_implied_unit:
             current_unit = infl_implied_unit
-            # 若 block 內也有 unit_in_blk 但跟進流編號不一致, 留給下個 block
             if unit_in_blk and unit_in_blk != infl_implied_unit:
+                new_pending = unit_in_blk
+        elif effl_implied_unit:
+            # 進流空白 + 有出流編號 → 是「同單元的第 N 條出流」
+            current_unit = effl_implied_unit
+            if unit_in_blk and unit_in_blk != effl_implied_unit:
                 new_pending = unit_in_blk
         elif pending_unit_for_next:
             current_unit = pending_unit_for_next
@@ -615,14 +628,20 @@ def parse_quality_page(text):
                 infl_q[item] = {"濃度": float(mq.group(2)), "質量": float(mq.group(3))}
                 effl_q[item] = {"濃度": float(mq.group(4)), "質量": float(mq.group(5))}
                 continue
-            # 2 個數字 = 單側 (沒出流)
+            # 2 個數字 = 單側 (沒進流或沒出流)
             mq2 = re.match(
                 r"^([^\d\s][^\d]*?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*$",
                 ln_norm
             )
             if mq2:
                 item = mq2.group(1).strip()
-                infl_q[item] = {"濃度": float(mq2.group(2)), "質量": float(mq2.group(3))}
+                # 判斷這 2 個數字歸進流還出流:
+                # 若 infl_code 空 + effl_code 有 → 這是出流 (例: T01-21 第二條出流)
+                # 否則預設歸進流
+                if not infl_code and effl_code:
+                    effl_q[item] = {"濃度": float(mq2.group(2)), "質量": float(mq2.group(3))}
+                else:
+                    infl_q[item] = {"濃度": float(mq2.group(2)), "質量": float(mq2.group(3))}
                 continue
             # pH/水溫: "pH值 1 ~ 7 - 6 ~ 9 -"
             mph = re.match(
@@ -633,6 +652,19 @@ def parse_quality_page(text):
                 item = mph.group(1).strip()
                 infl_q[item] = {"範圍": f"{mph.group(2)}~{mph.group(3)}"}
                 effl_q[item] = {"範圍": f"{mph.group(4)}~{mph.group(5)}"}
+                continue
+            # pH/水溫 只有單側: "pH值 7 ~ 11 -"
+            mph2 = re.match(
+                r"^(pH值|水溫.*?)\s+([\d\.]+)\s*[~～-]\s*([\d\.]+)\s*-?\s*$",
+                ln_norm
+            )
+            if mph2:
+                item = mph2.group(1).strip()
+                rng = {"範圍": f"{mph2.group(2)}~{mph2.group(3)}"}
+                if not infl_code and effl_code:
+                    effl_q[item] = rng
+                else:
+                    infl_q[item] = rng
 
         if current_unit:
             results.append({
