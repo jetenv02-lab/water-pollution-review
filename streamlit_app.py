@@ -2154,7 +2154,21 @@ with tab1:
         base_name = os.path.splitext(pdf_filename)[0] if pdf_filename else "result"
 
         # ───── 統一匯出: 選對象 → checkbox 自動套對應預設 ─────
+        # 強制重 import (避免 Streamlit Cloud 用舊版 cache)
+        import importlib
         import export_report as _xrp
+        try:
+            _xrp = importlib.reload(_xrp)
+        except Exception:
+            pass
+        # 防呆: 若舊版 cache 還沒被擠掉, 提示 reboot
+        if not hasattr(_xrp, "get_default_options") or not hasattr(_xrp, "OPTION_LABELS"):
+            st.error(
+                "⚠️ 偵測到 export_report 模組為舊版本 (Streamlit Cloud 模組 cache)。"
+                "請點右下角「Manage app」→「Reboot app」強制重啟, 即可生效。"
+            )
+            st.stop()
+
         _findings = st.session_state.get("_check_findings") or []
         _bt = st.session_state.get("_business_type", "") or ""
         if _bt == "(不檢查)": _bt = ""
