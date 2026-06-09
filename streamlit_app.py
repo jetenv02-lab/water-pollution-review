@@ -2153,50 +2153,72 @@ with tab1:
         st.subheader("📥 下載抽取結果")
         base_name = os.path.splitext(pdf_filename)[0] if pdf_filename else "result"
 
-        # ───── 統一匯出: 選對象 → 自動產對應格式 ─────
-        # 取出智能審查 findings (若有跑過)
+        # ───── 統一匯出: 選對象 → checkbox 自動套對應預設 ─────
+        import export_report as _xrp
         _findings = st.session_state.get("_check_findings") or []
         _bt = st.session_state.get("_business_type", "") or ""
         if _bt == "(不檢查)": _bt = ""
 
-        # 上次匯出設定 (session_state, 重整頁面不會保留)
-        _saved_target = st.session_state.get("_export_target", "internal")
-        _saved_topology = st.session_state.get("_export_inc_topology", True)
-        _saved_water = st.session_state.get("_export_inc_water", True)
-        _saved_rules = st.session_state.get("_export_inc_rules", False)
-
         with st.expander("📤 匯出審查結果", expanded=False):
             _target_labels = {
-                "internal": "🗂 內部覆核 (Excel, 含所有細節 + 拓樸備註)",
-                "vendor":   "📋 廠商通知 (Word, 含改善建議與回覆欄)",
-                "json":     "💾 AI 再分析 (JSON, 完整結構化資料)",
+                "internal": "🗂 內部覆核 (Excel, 多分頁含細節)",
+                "vendor":   "📋 廠商通知 (Word, 改善建議書)",
+                "json":     "💾 AI 再分析 (JSON, 整合資料)",
             }
-            _target_keys = list(_target_labels.keys())
+            # 初始化: 第一次套 internal 預設
+            if "_export_target" not in st.session_state:
+                st.session_state["_export_target"] = "internal"
+                for k, v in _xrp.get_default_options("internal").items():
+                    st.session_state[f"_export_opt_{k}"] = v
+
+            _prev_target = st.session_state.get("_export_prev_target", st.session_state["_export_target"])
             _target = st.radio(
                 "匯出對象",
-                options=_target_keys,
+                options=list(_target_labels.keys()),
                 format_func=lambda k: _target_labels[k],
                 key="_export_target",
                 horizontal=False,
             )
+            # 偵測對象變更 → 自動套對應預設 (12 個 checkbox 全部刷新)
+            if _target != _prev_target:
+                for k, v in _xrp.get_default_options(_target).items():
+                    st.session_state[f"_export_opt_{k}"] = v
+                st.session_state["_export_prev_target"] = _target
+                st.rerun()
+            st.session_state["_export_prev_target"] = _target
 
-            st.markdown("**包含內容**")
-            cca, ccb, ccc = st.columns(3)
-            _inc_topology = cca.checkbox("拓樸備註", key="_export_inc_topology")
-            _inc_water = ccb.checkbox("單元水質", key="_export_inc_water")
-            _inc_rules = ccc.checkbox("規則對照", key="_export_inc_rules")
+            # 全選 / 全取消 按鈕
+            st.markdown("**📦 包含內容** (一律含: 摘要 + 🔴不合理 + 🟡待人工)")
+            bcol1, bcol2, _bcol3 = st.columns([1, 1, 4])
+            if bcol1.button("☑ 全選", key="_export_select_all"):
+                for k in _xrp.OPTION_LABELS:
+                    st.session_state[f"_export_opt_{k}"] = True
+                st.rerun()
+            if bcol2.button("☐ 全取消", key="_export_select_none"):
+                for k in _xrp.OPTION_LABELS:
+                    st.session_state[f"_export_opt_{k}"] = False
+                st.rerun()
+
+            # 依分組顯示 12 個 checkbox
+            from collections import defaultdict
+            _grouped = defaultdict(list)
+            for opt_key, (group, label) in _xrp.OPTION_LABELS.items():
+                _grouped[group].append((opt_key, label))
+            for group_name, opts_in_group in _grouped.items():
+                st.caption(group_name)
+                _cols = st.columns(3)
+                for i, (opt_key, label) in enumerate(opts_in_group):
+                    _cols[i % 3].checkbox(label, key=f"_export_opt_{opt_key}")
 
             if not _findings:
                 st.caption("💡 還沒跑「開始完整審查」, 匯出檔只會有抽取資料, 沒有 findings。")
 
+            # 收集 checkbox → options
+            _opts = {"business_type": _bt}
+            for k in _xrp.OPTION_LABELS:
+                _opts[k] = bool(st.session_state.get(f"_export_opt_{k}", False))
+
             try:
-                import export_report as _xrp
-                _opts = {
-                    "business_type": _bt,
-                    "include_topology": _inc_topology,
-                    "include_water_quality": _inc_water,
-                    "include_rules": _inc_rules,
-                }
                 _data, _fname, _mime = _xrp.build_export(
                     _target, app_data, _findings, _opts, base_name=base_name
                 )
