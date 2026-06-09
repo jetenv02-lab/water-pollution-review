@@ -450,6 +450,65 @@ def check_fast_slow_hrt_ratio(app_data):
     return findings
 
 
+def check_cross_unit_q_consistency(app_data):
+    """跨單元檢查: 同條 stream 在兩端的反推 Q 應相等。
+
+    某條 stream code (例 WTA01-01-1) 同時出現在:
+        - T01-01 的 effluent (作為出流)
+        - T01-02 的 influent (作為進流)
+    這是「同一條水」, 兩個單元反推出來的 Q 理論上應該相等。
+    差 > 10% 表示水質表填寫不一致。
+    """
+    findings = []
+    units = app_data.get("units", {}) or {}
+
+    # 建立 stream_code → [(unit_code, q_cmd, side)]
+    appearances = {}
+    for code, unit in units.items():
+        stream_q = unit.get("stream_q") or {}
+        out_streams = list((unit.get("effluent") or {}).keys())
+        in_streams = list((unit.get("influent") or {}).keys())
+        for s_code in out_streams:
+            qres = stream_q.get(s_code)
+            if isinstance(qres, dict) and qres.get("ok"):
+                q = qres.get("q_cmd")
+                if q and q > 0:
+                    appearances.setdefault(s_code, []).append((code, q, "out"))
+        for s_code in in_streams:
+            qres = stream_q.get(s_code)
+            if isinstance(qres, dict) and qres.get("ok"):
+                q = qres.get("q_cmd")
+                if q and q > 0:
+                    appearances.setdefault(s_code, []).append((code, q, "in"))
+
+    for s_code, appears in appearances.items():
+        if len(appears) < 2:
+            continue
+        qs = [a[1] for a in appears]
+        q_max = max(qs)
+        q_min = min(qs)
+        if q_max <= 0:
+            continue
+        diff_pct = (q_max - q_min) / q_max * 100
+        if diff_pct > 10:
+            severity = "不合理" if diff_pct > 30 else "待人工"
+            tags = ", ".join(f"{u}({side},Q={q:.2f})" for u, q, side in appears)
+            findings.append({
+                "嚴重度": severity,
+                "類型": "文件一致性",
+                "單元": " ↔ ".join(sorted(set(a[0] for a in appears))),
+                "標準槽體": "",
+                "對照項目": f"同條流 Q 不一致 ({s_code})",
+                "描述": (
+                    f"Stream {s_code} 在 {len(appears)} 個單元出現, 反推 Q 不一致: "
+                    f"{tags}, 差 {diff_pct:.1f}%。"
+                    f"同一條水的 Q 應守恆, 差 > 10% 表示某邊水質表填寫錯誤。"
+                ),
+                "依據": "學理: 同條 stream 兩端 Q 應相等",
+            })
+    return findings
+
+
 def check_quality_table_consistency(unit):
     """檢查: 進/出流水質表的「質量÷濃度」反推 Q 應在 19 項間一致。
 
@@ -529,6 +588,20 @@ def run_balance_checks(app_data):
             "單元": "(跨單元)",
             "標準槽體": "",
             "對照項目": "check_fast_slow_hrt_ratio",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # 跨單元檢查: 同條流 Q 一致
+    try:
+        findings.extend(check_cross_unit_q_consistency(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤",
+            "類型": "系統",
+            "單元": "(跨單元)",
+            "標準槽體": "",
+            "對照項目": "check_cross_unit_q_consistency",
             "描述": f"檢查器錯誤: {e}",
             "依據": "(內部)",
         })

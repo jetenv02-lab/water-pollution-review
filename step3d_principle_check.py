@@ -98,18 +98,18 @@ def check_removal_rate_vs_default(unit):
 
 
 def check_raw_water_vs_typical(app_data):
-    """檢查 2: 原廢水濃度遠超 / 遠低於典型值。
+    """檢查 2: 原廢水濃度偏離典型值 (僅供參考, 已退讓嚴重度)。
 
-    取第一個單元(通常是廢水收集池)的進流當原廢水。
+    ⚠️ 注意: 這個「典型值」是「一般生活/工業廢水」經驗中位數, **非法規**。
+    電鍍/半導體/化學等業別原廢水濃度動輒 100~5000 mg/L, 完全合理。
+    所以閾值放寬到 100 倍 / 0.01 倍, 並且僅當「明顯異常」才提示。
+    真正的「不合格」應該以「放流水標準」為準 (見 check_discharge_standard)。
     """
     findings = []
-    # 找第一個單元
     units = app_data.get("units", {})
     if not units:
         return findings
 
-    # 取所有單元的所有進流, 看哪個是『最原始的進流』
-    # 啟發式: 進流編號是 WTB(原廢水) 且來自單元代號最小的
     first_code = min(units.keys()) if units else None
     if not first_code:
         return findings
@@ -133,25 +133,34 @@ def check_raw_water_vs_typical(app_data):
             if default_v <= 0:
                 continue
             ratio = c / default_v
-            if ratio > 10:
+            # 閾值放寬: 100 倍以上才提示 (避免電鍍業誤判)
+            if ratio > 100:
                 findings.append({
                     "嚴重度": "待人工",
                     "類型": "水質標準",
                     "單元": first_code,
                     "標準槽體": "原廢水",
                     "對照項目": item,
-                    "描述": f"原廢水 {item} 濃度 {c} {default['unit']} 為典型值 ({default_v}) 的 {ratio:.1f} 倍",
-                    "依據": "原廢水水質典型值對照 (僅供參考)",
+                    "描述": (
+                        f"原廢水 {item} 濃度 {c} {default['unit']} 遠超「一般廢水」"
+                        f"典型值 ({default_v} {default['unit']}) 的 {ratio:.0f} 倍。"
+                        f"⚠️ 此典型值非法規, 電鍍/半導體/化學等業別常見此狀況, 建議改參考「放流水標準」判斷。"
+                    ),
+                    "依據": "一般廢水水質中位經驗值 (非法規, 僅供異常偵測參考)",
                 })
-            elif ratio < 0.1:
+            # 低於 0.01 倍才提示 (太低可能是漏填/單位錯)
+            elif ratio < 0.01:
                 findings.append({
                     "嚴重度": "待人工",
                     "類型": "水質標準",
                     "單元": first_code,
                     "標準槽體": "原廢水",
                     "對照項目": item,
-                    "描述": f"原廢水 {item} 濃度 {c} {default['unit']} 為典型值 ({default_v}) 的 {ratio:.3f} 倍 (偏低)",
-                    "依據": "原廢水水質典型值對照 (僅供參考)",
+                    "描述": (
+                        f"原廢水 {item} 濃度 {c} {default['unit']} 遠低於典型值 "
+                        f"({default_v} {default['unit']}) 的 {ratio:.4f} 倍, 可能漏填或單位錯。"
+                    ),
+                    "依據": "一般廢水水質中位經驗值 (非法規, 僅供異常偵測參考)",
                 })
     return findings
 
@@ -193,14 +202,73 @@ def check_business_type_items(app_data, business_type):
 
 
 def check_q_balance(app_data):
-    """檢查 4: 單元層級 Q 守恆。
+    """檢查 4: 單元層級 Q 守恆 — Σ進流 Q ≈ Σ出流 Q。
 
-    若進流量 vs 出流量差 > 5% 且非污泥側單元, 標記。
-    (秋棠案例的 v2 抽取目前還沒抽尺寸/流量,
-     所以這個檢查的有效性取決於 facility 表是否能拿到 Q)
+    用 step2 已反推的 stream_q (從質量÷濃度算出來), 對每個單元
+    比較「Σ 所有進流的 Q」vs「Σ 所有出流的 Q」, 差 > 5% 標 ⚠️。
+
+    特殊情況豁免:
+        - 單側流 (只有進或只有出, 表示是端點或污泥側) → 跳過
+        - 含「污泥」「脫水」「濃縮」字眼的單元 → 跳過 (污泥分離本來不守恆)
+        - 廢水收集池 / 廢水調整池 (多股匯流入單一出, 通常一致) → 仍要查
     """
-    # 暫時 placeholder - 等抽流量功能加進 step2_extract_v2 再開
-    return []
+    findings = []
+    units = app_data.get("units", {})
+
+    SLUDGE_KW = ["污泥", "脫水", "濃縮"]
+
+    for code, unit in units.items():
+        name = unit.get("name_in_doc", "") + " " + (unit.get("std_tank") or "")
+        # 污泥相關單元: 跳過 (進出 Q 本來就不等)
+        if any(kw in name for kw in SLUDGE_KW):
+            continue
+
+        stream_q = unit.get("stream_q") or {}
+        influent = unit.get("influent") or {}
+        effluent = unit.get("effluent") or {}
+
+        if not influent or not effluent:
+            # 只有單側 (端點或無資料), 跳過
+            continue
+
+        sum_in = 0.0
+        sum_out = 0.0
+        count_in = 0
+        count_out = 0
+        for code_s, items in influent.items():
+            qres = stream_q.get(code_s, {})
+            if qres.get("ok"):
+                sum_in += qres.get("q_cmd", 0)
+                count_in += 1
+        for code_s, items in effluent.items():
+            qres = stream_q.get(code_s, {})
+            if qres.get("ok"):
+                sum_out += qres.get("q_cmd", 0)
+                count_out += 1
+
+        if sum_in <= 0 or sum_out <= 0:
+            continue
+
+        diff_pct = abs(sum_in - sum_out) / max(sum_in, sum_out) * 100
+        if diff_pct > 5:
+            severity = "不合理" if diff_pct > 20 else "待人工"
+            direction = "多" if sum_in > sum_out else "少"
+            findings.append({
+                "嚴重度": severity,
+                "類型": "質量平衡",
+                "單元": code,
+                "標準槽體": unit.get("std_tank", ""),
+                "對照項目": "Q 守恆 (Σ進=Σ出)",
+                "描述": (
+                    f"Σ 進流 Q = {sum_in:.2f} CMD ({count_in} 條), "
+                    f"Σ 出流 Q = {sum_out:.2f} CMD ({count_out} 條), "
+                    f"進流比出流{direction} {diff_pct:.1f}%。"
+                    f"水流非污泥側單元理論上 Q 守恆 (Σ進=Σ出), "
+                    f"差異 > 5% 表示可能有漏記的支流或水質表填寫錯誤。"
+                ),
+                "依據": "質量守恆原理: 水流穩態下 Σ進=Σ出 (污泥側單元除外)",
+            })
+    return findings
 
 
 # ─────────────────── 主入口 ───────────────────
@@ -254,6 +322,50 @@ def run_advanced_checks(app_data, business_type=None):
             "單元": "(全廠)",
             "標準槽體": "",
             "對照項目": "check_business_type",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # Q 守恆檢查 (新啟用, 用 step2 反推 Q)
+    try:
+        findings.extend(check_q_balance(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤",
+            "類型": "系統",
+            "單元": "(全廠)",
+            "標準槽體": "",
+            "對照項目": "check_q_balance",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # 放流水標準檢查 (依業別比對環境部公告限值)
+    try:
+        from discharge_standards import check_discharge_standard
+        findings.extend(check_discharge_standard(app_data, business_type))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤",
+            "類型": "系統",
+            "單元": "(全廠)",
+            "標準槽體": "",
+            "對照項目": "check_discharge_standard",
+            "描述": f"檢查器錯誤: {e}",
+            "依據": "(內部)",
+        })
+
+    # 加藥機制檢查 (鎳系/輕系/各系 分流規則)
+    try:
+        from check_dosing import run_dosing_checks
+        findings.extend(run_dosing_checks(app_data))
+    except Exception as e:
+        findings.append({
+            "嚴重度": "錯誤",
+            "類型": "系統",
+            "單元": "(全廠)",
+            "標準槽體": "",
+            "對照項目": "run_dosing_checks",
             "描述": f"檢查器錯誤: {e}",
             "依據": "(內部)",
         })
