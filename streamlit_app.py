@@ -1403,6 +1403,32 @@ with tab1:
 
         st.success(f"✅ 抽取完成! 共 **{app_data['total_units']}** 個處理單元 · 來源: {pdf_filename}")
 
+        # PDF 上的「技師審查註解」總覽 (黃色便利貼)
+        _reviewer_notes = app_data.get("reviewer_notes") or []
+        if _reviewer_notes:
+            with st.expander(
+                f"📌 **PDF 上發現 {len(_reviewer_notes)} 筆技師審查註解** "
+                f"(出現在 {len(set(n.get('page') for n in _reviewer_notes))} 個頁面)",
+                expanded=False,
+            ):
+                st.caption(
+                    "這些是申請文件 PDF 上原本就有的「便利貼註解」, 是審查技師用 Acrobat / Foxit "
+                    "等 PDF 工具加上的疑問或修正建議。系統用 pypdf 抽出來給你彙整一次看完。"
+                    "切換單元詳細頁時, 系統會自動顯示與該單元頁數相關的註解。"
+                )
+                # 依頁排序
+                from collections import defaultdict
+                _by_page = defaultdict(list)
+                for n in _reviewer_notes:
+                    _by_page[n.get("page", 0)].append(n)
+                for pn in sorted(_by_page.keys()):
+                    for n in _by_page[pn]:
+                        author = n.get("author", "")
+                        author_tag = f" — {author}" if author and author != "user" else ""
+                        with st.container(border=True):
+                            st.markdown(f"📌 **頁 {pn}**{author_tag}")
+                            st.markdown(f"> {n.get('contents', '')}")
+
         # ───────── 章節動態定位區塊 ─────────
         st.subheader("📍 本文件章節定位")
         st.caption("不同 PDF 頁碼會浮動。系統用『章節標題』找到各區段所在頁,而非寫死頁碼。")
@@ -1783,6 +1809,27 @@ with tab1:
                             f"= √(P={_metrics['motor_power_w']:.0f}W / "
                             f"(μ×V={_metrics['volume_m3']:.2f}))"
                         )
+
+            # ── 技師審查註解 (PDF 上的便利貼) ──
+            # 從整份 app_data 抽出本單元相關頁的註解
+            _all_reviewer_notes = app_data.get("reviewer_notes") or []
+            if _all_reviewer_notes:
+                unit_pages = unit.get("pages_found", [])
+                # 找這幾頁 (含 ±1 鄰近頁) 的註解
+                _ref_pages = set()
+                for p in unit_pages:
+                    _ref_pages.update([p - 1, p, p + 1])
+                _unit_notes = [n for n in _all_reviewer_notes if n.get("page") in _ref_pages]
+                if _unit_notes:
+                    st.divider()
+                    st.markdown(f"##### 📌 PDF 技師審查註解 ({len(_unit_notes)} 筆)")
+                    st.caption(f"這是 PDF 上原本就有的審查技師便利貼註解 (出現在頁 {sorted(set(n.get('page') for n in _unit_notes))})")
+                    for n in _unit_notes:
+                        author = n.get("author", "user")
+                        author_tag = f" by {author}" if author and author != "user" else ""
+                        with st.container(border=True):
+                            st.markdown(f"📌 **頁 {n.get('page')}**{author_tag}")
+                            st.markdown(f"> {n.get('contents', '')}")
 
             # ── 本單元審查發現摘要 ──
             # 從全廠 findings 篩出這個 selected 單元的, 上方紅黃綠 + 詳列

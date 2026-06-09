@@ -153,8 +153,11 @@ SIZE_DIM_PATTERN = re.compile(
 # (二)設計操作參數 / (三)量測操作參數 中的數值列
 # 例: "攪拌機轉速 09 180～ 220 [547]轉／分(rpm) 機具規格"
 # 例: "pH值 03 6～ 9 [000]無單位 pH計 1次/日"
+# 例 (邑昇): "加藥量(氯化鐵 45%) 05 0～ 0.381 [131] kg/Ton 啟用時加" 沒最大值
+# 例 (邑昇): "水力停留時間 60 189.3～ [086]小時 8.28m3 ÷ 1.05CMD × 24"
+# 改成: max 可選, ~ 後可能直接是單位
 PARAM_LINE_PATTERN = re.compile(
-    r"^(.+?)\s+(\d{2})\s+(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)\s+\[(\d+)\](.+)$"
+    r"^(.+?)\s+(\d{2})\s+(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)?\s*\[(\d+)\](.+)$"
 )
 
 # (四)機具設施: pH計 池內 1 0.37 KW
@@ -328,10 +331,16 @@ def _parse_params_section(section_text):
                 continue
             pmin, pmax = m_full.group(3), m_full.group(4)
             tail = m_full.group(6).strip()
-            results.append((pname, {
-                "min": float(pmin), "max": float(pmax),
-                "raw": f"{pmin}~{pmax} {tail}",
-            }))
+            # 從 tail 抽「啟用/停用/不佳時/非常態」備註
+            note = _extract_design_note(tail)
+            info = {
+                "min": float(pmin),
+                "max": float(pmax) if pmax else None,
+                "raw": f"{pmin}~{pmax or ''} {tail}".strip(),
+            }
+            if note:
+                info["note"] = note
+            results.append((pname, info))
             used.add(i)
             continue
 
@@ -395,13 +404,63 @@ def _parse_params_section(section_text):
         if not combined:
             continue
 
-        results.append((combined, {
-            "min": float(pmin), "max": float(pmax),
-            "raw": f"{pmin}~{pmax} {unit_part}",
-        }))
+        # 在 unit_part 抽備註 (啟用/停用/不佳時/非常態)
+        note2 = _extract_design_note(unit_part)
+        info2 = {
+            "min": float(pmin),
+            "max": float(pmax) if pmax else None,
+            "raw": f"{pmin}~{pmax or ''} {unit_part}".strip(),
+        }
+        if note2:
+            info2["note"] = note2
+
+        results.append((combined, info2))
         used.add(i)
 
     return results
+
+
+# 「啟用 / 停用 / 不佳時 / 非常態」這類設計備註關鍵字
+DESIGN_NOTE_KEYWORDS = [
+    "啟用", "停用", "不佳", "非常態", "故障", "緊急", "備用", "緩衝",
+    "視情況", "視需要", "視水量", "視水質", "間歇", "週期",
+    "替換", "輪替", "備援",
+]
+
+
+def _extract_design_note(text):
+    """從「操作參數量測或計算方式」欄抽設計備註。
+
+    例: "藥桶液位換算, 酸化反應不佳時啟用"
+        → 抽出「酸化反應不佳時啟用」
+    例: "水量過大時啟用"
+        → 抽出「水量過大時啟用」
+    """
+    if not text:
+        return None
+    s = str(text)
+    for kw in DESIGN_NOTE_KEYWORDS:
+        idx = s.find(kw)
+        if idx == -1:
+            continue
+        # 往前找句首 (逗號 / 句號 / 開頭)
+        start = idx
+        for back_kw in [",", ",", "。", ";"]:
+            bidx = s.rfind(back_kw, 0, idx)
+            if bidx > start - 20:  # 不要太遠
+                start = max(start, bidx + 1)
+        # 往後找句尾 (短一點, 最多 30 字)
+        end = min(len(s), idx + 30)
+        # 找句尾標點
+        for end_kw in [",", ",", "。", ";"]:
+            eidx = s.find(end_kw, idx + len(kw))
+            if 0 < eidx < end:
+                end = eidx
+                break
+        snippet = s[start:end].strip(" ,，。;:")
+        if snippet:
+            return snippet
+    return None
 
 
 def parse_facility_page(text, page_index):
@@ -700,6 +759,16 @@ def extract_application(pdf_path, verbose=True):
         result["raw_water"] = {}
         result["discharge"] = {}
         result["raw_water_error"] = str(_wm_err)
+
+    # 抽 PDF 上的「技師審查註解」(便利貼 / Sticky Notes / annotations)
+    # 審查技師在 PDF 用 Acrobat 加的黃色註解, 寫疑問或修正建議
+    # 例: "13.78?分母應該是每日產出污泥4.365 ?373CMD是水量?"
+    try:
+        import pdf_annotations as _pa
+        result["reviewer_notes"] = _pa.extract_reviewer_notes(pdf_path)
+    except Exception as _ra_err:
+        result["reviewer_notes"] = []
+        result["reviewer_notes_error"] = str(_ra_err)
 
     return result
 
