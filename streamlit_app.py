@@ -1519,33 +1519,87 @@ with tab1:
             graph = st.session_state.get("_flow_graph")
             if graph:
                 nb = get_unit_neighbors(graph, selected)
-                if nb["upstream"] or nb["downstream"]:
+                upstream = list(nb.get("upstream", []))
+                downstream = list(nb.get("downstream", []))
+
+                # 補上示意圖解析的 WM (原廢水) → 本單元 / 本單元 → D (放流口)
+                # 因為「進出水質表」只填 WTBxx-yy / WTAxx-yy, 不寫 WM / D
+                # 只有 Gemini Vision 讀「水量平衡示意圖」才會抽到
+                _fr = st.session_state.get("_flow_extract_result")
+                if _fr and _fr.get("ok"):
+                    # WMxx → 本單元 (補進上游)
+                    for ei in _fr.get("all_external_inputs", []) or []:
+                        if ei.get("to_unit") == selected:
+                            upstream.append({
+                                "from_unit": f"🌊 {ei.get('code', 'WM?')}",
+                                "from_stream": ei.get("code", "WM?"),
+                                "to_stream": ei.get("to_stream") or "(原廢水)",
+                                "confidence": "中",
+                                "method": "示意圖解析 (Gemini Vision)",
+                                "_source": "diagram",
+                                "_extra_name": ei.get("name", ""),
+                                "_q_cmd": ei.get("Q_cmd"),
+                            })
+                    # 本單元 → Dxx (補進下游)
+                    for dp in _fr.get("all_discharge_points", []) or []:
+                        if dp.get("from_unit") == selected:
+                            downstream.append({
+                                "from_stream": dp.get("from_stream") or "(放流)",
+                                "to_unit": f"🏁 {dp.get('code', 'D?')}",
+                                "to_stream": dp.get("code", "D?"),
+                                "confidence": "中",
+                                "method": "示意圖解析 (Gemini Vision)",
+                                "_source": "diagram",
+                                "_extra_name": dp.get("name", ""),
+                                "_q_cmd": dp.get("Q_cmd"),
+                            })
+
+                if upstream or downstream:
                     st.markdown("##### 🔗 水流串接")
                     cu, cd = st.columns(2)
                     with cu:
-                        st.markdown(f"**上游 ({len(nb['upstream'])} 條進入)**")
-                        if nb["upstream"]:
-                            up_rows = [
-                                {"來源單元": u["from_unit"],
-                                 "出流編號": u["from_stream"],
-                                 "→ 進流編號": u["to_stream"]}
-                                for u in nb["upstream"]
-                            ]
+                        st.markdown(f"**上游 ({len(upstream)} 條進入)**")
+                        if upstream:
+                            up_rows = []
+                            for u in upstream:
+                                row = {
+                                    "來源單元": u["from_unit"],
+                                    "出流編號": u["from_stream"],
+                                    "→ 進流編號": u["to_stream"],
+                                }
+                                if u.get("_q_cmd") is not None:
+                                    row["Q (CMD)"] = f"{u['_q_cmd']:g}"
+                                up_rows.append(row)
                             st.dataframe(up_rows, width="stretch", hide_index=True)
+                            if any(u.get("_source") == "diagram" for u in upstream):
+                                st.caption("🌊 = 原廢水 (來自示意圖解析)")
                         else:
                             st.caption("(無偵測到上游, 可能是原廢水進入點或未串接)")
                     with cd:
-                        st.markdown(f"**下游 ({len(nb['downstream'])} 條流出)**")
-                        if nb["downstream"]:
-                            dn_rows = [
-                                {"出流編號": d["from_stream"],
-                                 "→ 目標單元": d["to_unit"],
-                                 "目標進流編號": d["to_stream"]}
-                                for d in nb["downstream"]
-                            ]
+                        st.markdown(f"**下游 ({len(downstream)} 條流出)**")
+                        if downstream:
+                            dn_rows = []
+                            for d in downstream:
+                                row = {
+                                    "出流編號": d["from_stream"],
+                                    "→ 目標單元": d["to_unit"],
+                                    "目標進流編號": d["to_stream"],
+                                }
+                                if d.get("_q_cmd") is not None:
+                                    row["Q (CMD)"] = f"{d['_q_cmd']:g}"
+                                dn_rows.append(row)
                             st.dataframe(dn_rows, width="stretch", hide_index=True)
+                            if any(d.get("_source") == "diagram" for d in downstream):
+                                st.caption("🏁 = 放流口 (來自示意圖解析)")
                         else:
                             st.caption("(無偵測到下游, 可能是放流口或未串接)")
+
+                    # 提示: 沒跑示意圖解析 → 不會看到 WM / D
+                    if not _fr or not _fr.get("ok"):
+                        st.info(
+                            "💡 想看「原廢水 WMxx → 本單元」「本單元 → 放流口 Dxx」的連結? "
+                            "請開啟「📊 水量平衡示意圖解析」(Step 4) 跑 Gemini Vision 解析。"
+                        )
                     st.divider()
 
             c1, c2 = st.columns(2)
