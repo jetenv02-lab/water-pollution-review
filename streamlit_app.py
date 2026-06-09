@@ -2153,25 +2153,67 @@ with tab1:
         st.subheader("📥 下載抽取結果")
         base_name = os.path.splitext(pdf_filename)[0] if pdf_filename else "result"
 
-        col1, col2 = st.columns(2)
-        with col1:
-            excel_buf = build_unit_excel(app_data)
-            st.download_button(
-                "📊 下載各單元詳細 Excel",
-                data=excel_buf,
-                file_name=f"{base_name}_單元資料.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
+        # ───── 統一匯出: 選對象 → 自動產對應格式 ─────
+        # 取出智能審查 findings (若有跑過)
+        _findings = st.session_state.get("_check_findings") or []
+        _bt = st.session_state.get("_business_type", "") or ""
+        if _bt == "(不檢查)": _bt = ""
+
+        # 上次匯出設定 (session_state, 重整頁面不會保留)
+        _saved_target = st.session_state.get("_export_target", "internal")
+        _saved_topology = st.session_state.get("_export_inc_topology", True)
+        _saved_water = st.session_state.get("_export_inc_water", True)
+        _saved_rules = st.session_state.get("_export_inc_rules", False)
+
+        with st.expander("📤 匯出審查結果", expanded=False):
+            _target_labels = {
+                "internal": "🗂 內部覆核 (Excel, 含所有細節 + 拓樸備註)",
+                "vendor":   "📋 廠商通知 (Word, 含改善建議與回覆欄)",
+                "json":     "💾 AI 再分析 (JSON, 完整結構化資料)",
+            }
+            _target_keys = list(_target_labels.keys())
+            _target = st.radio(
+                "匯出對象",
+                options=_target_keys,
+                format_func=lambda k: _target_labels[k],
+                key="_export_target",
+                horizontal=False,
             )
-        with col2:
-            json_str = json.dumps(app_data, ensure_ascii=False, indent=2)
-            st.download_button(
-                "💾 下載 JSON 結構化資料",
-                data=json_str.encode("utf-8"),
-                file_name=f"{base_name}_抽取結果.json",
-                mime="application/json",
-                width="stretch",
-            )
+
+            st.markdown("**包含內容**")
+            cca, ccb, ccc = st.columns(3)
+            _inc_topology = cca.checkbox("拓樸備註", key="_export_inc_topology")
+            _inc_water = ccb.checkbox("單元水質", key="_export_inc_water")
+            _inc_rules = ccc.checkbox("規則對照", key="_export_inc_rules")
+
+            if not _findings:
+                st.caption("💡 還沒跑「開始完整審查」, 匯出檔只會有抽取資料, 沒有 findings。")
+
+            try:
+                import export_report as _xrp
+                _opts = {
+                    "business_type": _bt,
+                    "include_topology": _inc_topology,
+                    "include_water_quality": _inc_water,
+                    "include_rules": _inc_rules,
+                }
+                _data, _fname, _mime = _xrp.build_export(
+                    _target, app_data, _findings, _opts, base_name=base_name
+                )
+                st.download_button(
+                    f"📥 下載 ({len(_data)/1024:.0f} KB)",
+                    data=_data,
+                    file_name=_fname,
+                    mime=_mime,
+                    width="stretch",
+                    type="primary",
+                )
+            except RuntimeError as _e:
+                st.error(f"產生失敗: {_e}")
+                if "python-docx" in str(_e):
+                    st.code("pip install python-docx", language="bash")
+            except Exception as _e:
+                st.error(f"匯出錯誤: {_e}")
 
     # ───────── 智能審查結果顯示 (基於 session, 由「開始完整審查」按鈕產生) ─────────
     if st.session_state.get("_check_findings") is not None:
