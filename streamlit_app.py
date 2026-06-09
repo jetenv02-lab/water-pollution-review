@@ -2678,7 +2678,27 @@ with tab_sync:
                         st.caption(f"已備份: `{os.path.basename(r['backup'].get('xlsx',''))}`")
                     if r.get("csv_export", {}).get("ok"):
                         st.caption(f"已產出 csv: {r['csv_export']['rows_written']} 筆")
-                    st.info("💡 線上版規則更新需請系統管理員部署")
+
+                    # 顯示自動 git push 結果 (修同步架構)
+                    gp = r.get("git_push") or {}
+                    gp_status = gp.get("status")
+                    if gp_status == "pushed":
+                        st.success("📤 " + str(gp.get('message', '已推送 GitHub')) + "。Cloud 將於 1~3 分鐘自動 redeploy")
+                    elif gp_status == "no_change":
+                        st.caption("📋 規則庫.xlsx 跟 GitHub 一致, 無需推送")
+                    elif gp_status == "no_git":
+                        st.warning(
+                            "⚠️ 此環境 (Streamlit Cloud 容器) 無法自動推送 GitHub。"
+                            "規則僅在本次 session 生效, reboot 後會失效! "
+                            "解法: 在本機跑 streamlit, 點此按鈕即可自動推送; "
+                            "或請系統管理員從 GitHub repo 手動更新 規則庫.xlsx"
+                        )
+                    elif gp_status == "no_credentials":
+                        st.warning(
+                            "⚠️ Cloud 環境無 GitHub 推送權限。本次規則 reboot 後會失效。 細節: " + str(gp.get('message', ''))
+                        )
+                    elif gp_status == "push_failed":
+                        st.warning("⚠️ 自動推送失敗: " + str(gp.get('message', '')) + "。請用「📤 推送規則庫到 GitHub」按鈕重試")
                 else:
                     st.error(f"❌ 失敗: {r.get('error', '?')}")
 

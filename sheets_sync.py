@@ -538,6 +538,9 @@ def download_sheets_to_xlsx(sheet_id=None):
             if not sn.startswith("_") and len(rows) > 1
         )
 
+        # 自動 git commit + push (修同步架構: 規則庫.xlsx 改完應推 GitHub)
+        push_result = _try_git_push_rules_xlsx()
+
         return {
             "ok": True,
             "sheets_read": len(sheets_data),
@@ -547,9 +550,68 @@ def download_sheets_to_xlsx(sheet_id=None):
             "sheet_url": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit",
             "source": source,
             "timestamp": _fmt_tpe(),
+            "git_push": push_result,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _try_git_push_rules_xlsx():
+    """嘗試把 規則庫.xlsx 自動 commit + push 到 GitHub。
+
+    Returns:
+        dict: {ok, status, message}
+            status: "pushed" / "no_change" / "no_git" / "no_remote" / "push_failed" / "no_credentials"
+    """
+    import subprocess
+    base_dir = os.path.dirname(RULES_XLSX)
+
+    def _run(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", cwd=base_dir, timeout=30)
+        except Exception as e:
+            return None
+
+    # 1. 是不是 git repo
+    r = _run(["git", "rev-parse", "--is-inside-work-tree"])
+    if r is None or r.returncode != 0:
+        return {"ok": False, "status": "no_git",
+                "message": "目前環境不是 git repo, 無法自動推送 (例如 Streamlit Cloud 容器內)"}
+
+    # 2. xlsx 有沒有變動
+    r = _run(["git", "status", "--porcelain", "規則庫.xlsx"])
+    if r is None or not r.stdout.strip():
+        return {"ok": True, "status": "no_change",
+                "message": "規則庫.xlsx 無變動, 不需推送"}
+
+    # 3. 有 remote 嗎
+    r = _run(["git", "remote"])
+    if r is None or not r.stdout.strip():
+        return {"ok": False, "status": "no_remote",
+                "message": "沒有 git remote, 無法推送"}
+
+    # 4. add + commit + push
+    _run(["git", "add", "規則庫.xlsx"])
+    import datetime
+    msg = f"規則庫更新 (Sheet 同步): {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    r = _run(["git", "commit", "-m", msg])
+    if r is None or r.returncode != 0:
+        return {"ok": False, "status": "push_failed",
+                "message": f"commit 失敗: {r.stderr if r else 'subprocess error'}"}
+
+    r = _run(["git", "push"])
+    if r is None or r.returncode != 0:
+        err = (r.stderr if r else "subprocess error")
+        # 推不上去常見原因: 沒 credentials
+        if any(k in err.lower() for k in ["authentication", "permission", "credentials", "denied"]):
+            return {"ok": False, "status": "no_credentials",
+                    "message": f"無 GitHub 推送權限 (Cloud 環境): {err[:200]}"}
+        return {"ok": False, "status": "push_failed",
+                "message": f"push 失敗: {err[:200]}"}
+
+    return {"ok": True, "status": "pushed",
+            "message": f"已 commit + push GitHub: {msg}"}
 
 
 # ──────────────────────────────────────────────────
