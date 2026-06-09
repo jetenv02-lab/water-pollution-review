@@ -133,12 +133,38 @@ def get_mass(quality_dict, item_name):
 # ─────────────────── 各檢查函式 ───────────────────
 
 def check_dissolved_concentration_up(unit):
-    """檢查 1: 溶解性物質出流濃度 > 進流濃度 (學理不符)。"""
+    """檢查 1: 溶解性物質出流濃度 > 進流濃度 (學理不符)。
+
+    限縮觸發條件 (避免技師備註「沒看到」的誤報):
+    - 跳過「分離型」槽體 (沉澱/濃縮/浮上/過濾/脫水/吸附)
+      因為這類槽體污泥側自然濃縮, 若 PDF 只列水側看起來會異常
+    - 跳過「儲存型」槽體 (調勻/儲槽/暫存)
+      多源滙流, 濃度差是配比問題不是濃縮
+    - 跳過分流結構 (本單元 ≥ 2 出流)
+      水量分流時, 單條出流的濃度未必等於進流
+    - 門檻從 10% 放寬到 30% (對應典型量測誤差)
+    """
     findings = []
     code = unit["raw_code"]
     std_tank = unit["std_tank"]
     # 沉澱池/濃縮槽的「污泥側」出流會自然濃縮,豁免
     if std_tank in ("污泥濃縮池", "濃縮槽", "脫水機"):
+        return findings
+
+    # 額外豁免: 透過 _槽體學理 類型欄判斷
+    try:
+        import tank_chemistry as _tc
+        _rule = _tc.get_rule_for_unit(unit)
+        if _rule:
+            _type = _rule.get("類型", "")
+            if _type in ("分離", "儲存", "污泥"):
+                return findings
+    except Exception:
+        pass
+
+    # 分流結構 → 寫進 topology_notes 不產 finding
+    effluent_dict = unit.get("effluent", {}) or {}
+    if len(effluent_dict) >= 2:
         return findings
 
     for item in DISSOLVED_ITEMS:
@@ -149,14 +175,14 @@ def check_dissolved_concentration_up(unit):
         if c_in <= 0:
             continue
         ratio = c_out / c_in
-        if ratio > 1.1:  # 出流比進流高 10% 以上
+        if ratio > 1.3:  # 門檻放寬: 出流比進流高 30% 以上才視為異常
             findings.append({
                 "嚴重度": "不合理",
                 "類型": "質量平衡",
                 "單元": code,
                 "標準槽體": std_tank,
                 "對照項目": item,
-                "描述": f"{item} 出流濃度 {c_out:.2f} > 進流濃度 {c_in:.2f} (上升 {(ratio-1)*100:.1f}%)。溶解性物質不應自行濃縮。",
+                "描述": f"{item} 出流濃度 {c_out:.2f} > 進流濃度 {c_in:.2f} (上升 {(ratio-1)*100:.1f}%)。溶解性物質不應自行濃縮 (門檻 30%)。",
                 "依據": "質量守恆 (環工技師多筆缺失指出溶解性物質自行濃縮不合學理)",
             })
     return findings

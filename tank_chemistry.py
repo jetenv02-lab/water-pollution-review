@@ -174,9 +174,9 @@ def load_rules(xlsx_path=None):
         if not r or not r[0]:
             continue
         # 容錯: 欄數不夠就補 None (現在 13 欄)
-        r = list(r) + [None] * (13 - len(r))
+        r = list(r) + [None] * (14 - len(r))
         (std_tank, dose, allow_raw, deny_raw, tol, sev, desc, status,
-         hrt_min, hrt_max, sor_max, g_min, g_max) = r[:13]
+         hrt_min, hrt_max, sor_max, g_min, g_max, tank_type) = r[:14]
 
         # 狀態為 "?" 視為「待討論, 暫不啟用」
         if status and str(status).strip() == "?":
@@ -204,6 +204,7 @@ def load_rules(xlsx_path=None):
             "SOR_max": _to_float_or_none(sor_max),
             "G_min": _to_float_or_none(g_min),
             "G_max": _to_float_or_none(g_max),
+            "類型": (str(tank_type).strip() if tank_type else ""),
         }
     return rules
 
