@@ -989,13 +989,18 @@ with tab1:
                             f"📍 找到 **{len(img_pages)}** 張水量平衡示意圖頁: "
                             f"p{', p'.join(map(str, img_pages))}"
                         )
-                        max_pages = st.slider(
-                            "處理頁數 (省 token, 先測一張看效果)",
-                            min_value=1, max_value=len(img_pages),
-                            value=min(2, len(img_pages)),
-                            key="_flow_max_pages",
-                            help=f"每張圖約 $0.002~0.005, 共 {len(img_pages)} 張全跑約 ${len(img_pages) * 0.005:.3f}"
-                        )
+                        # 修: 只有 1 張時不能用 slider (min==max), 直接固定處理那 1 張
+                        if len(img_pages) <= 1:
+                            max_pages = len(img_pages)
+                            st.caption(f"將處理全部 **{max_pages}** 張示意圖 (約 ${max_pages * 0.005:.3f})")
+                        else:
+                            max_pages = st.slider(
+                                "處理頁數 (省 token, 先測一張看效果)",
+                                min_value=1, max_value=len(img_pages),
+                                value=min(2, len(img_pages)),
+                                key="_flow_max_pages",
+                                help=f"每張圖約 $0.002~0.005, 共 {len(img_pages)} 張全跑約 ${len(img_pages) * 0.005:.3f}"
+                            )
 
                         if "_flow_extract_result" not in st.session_state:
                             st.session_state["_flow_extract_result"] = None
