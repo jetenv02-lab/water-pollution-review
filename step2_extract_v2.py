@@ -134,7 +134,11 @@ def classify_tank(name_in_doc):
 # 頁 72+: (一)處理單元名稱: xxx 序號: T01－01 代碼: 120
 # 注意 pdfplumber 抽出來可能是 "T01- 01"(破折號後有空格), 需放寬
 UNIT_HEADER_PATTERN = re.compile(
-    r"\(一\)\s*處理單元名稱[：:\s]+(.+?)\s+序號[：:\s]+(T\d{2}\s*-\s*\d{2})\s+代碼[：:\s]+(\d+)"
+    # 同時支援:
+    #   (一)處理單元名稱: xxx 序號: T01-XX 代碼: nnn  (正常單元)
+    #   (一)污泥處理設施單元: xxx,序號:T01-XX,代碼:nnn (污泥單元, 用逗號分隔)
+    #   分隔符可以是空白或全形/半形逗號
+    r"\(一\)\s*(?:污泥)?處理(?:單元名稱|設施單元)[：:\s]+(.+?)[\s，,]+序號[：:\s]+(T\d{2}\s*[-－]\s*\d{2})[\s，,]+代碼[：:\s]+(\d+)"
 )
 
 # 頁 19+: 單元序號：T01-01
@@ -189,7 +193,7 @@ def find_section_pages(pdf):
         except Exception:
             continue
         norm = normalize_text(text)
-        if "(一)處理單元名稱" in norm and "序號" in norm:
+        if (("(一)處理單元名稱" in norm) or ("(一)污泥處理設施單元" in norm)) and "序號" in norm:
             facility_pages.append((i, norm, page))
         if "單元序號" in norm or "進出處理單元之水質資料" in norm:
             quality_pages.append((i, norm))
