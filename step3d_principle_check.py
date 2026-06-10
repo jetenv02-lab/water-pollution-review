@@ -296,30 +296,24 @@ def check_q_balance(app_data):
 
         diff_pct = abs(sum_in - sum_out) / max(sum_in, sum_out) * 100
 
+        # 拓樸偵測 (產生提示, 不豁免 finding)
         # 「自己有多出流」(本單元 effluent ≥ 2 條) 或 「上游有多出流」
-        # → 屬「水量分流結構」, 單條 Q 比對天生會差很多。
-        # 不產生 finding, 改寫進 unit["topology_notes"] 當備註讓 UI 顯示。
+        # → 屬「水量分流結構」, 仍出 finding 但加拓樸提示, 嚴重度降「待人工」
         self_split = (count_out >= 2) or (len(effluent) >= 2)
-        if diff_pct > 5 and (self_split or upstream_split):
-            note_lines = unit.setdefault("topology_notes", [])
-            if self_split and upstream_split:
-                reason = "本單元有多條出流, 且上游也是分流結構"
-            elif self_split:
-                reason = "本單元有多條出流 (水量分流)"
-            else:
-                reason = "上游單元有多條出流, 本單元只承接其中一條"
-            direction = "多" if sum_in > sum_out else "少"
-            note_lines.append(
-                f"ℹ️ 拓樸提示: {reason}。"
-                f"Σ 進 Q = {sum_in:.2f} CMD ({count_in} 條), "
-                f"Σ 出 Q = {sum_out:.2f} CMD ({count_out} 條), "
-                f"進比出{direction} {diff_pct:.1f}%。"
-                f"分流結構下單條 Q 比對天生會差, 請看出流加總是否守恆。"
-            )
-            continue
+        topology_hint = ""
+        if self_split and upstream_split:
+            topology_hint = " ⚠️ 拓樸提示: 本單元有多條出流, 且上游也是分流結構, 此差異可能來自水量分流而非真實異常, 請確認後標記為合理(備註)或異常。"
+        elif self_split:
+            topology_hint = " ⚠️ 拓樸提示: 本單元有多條出流(水量分流), 此差異可能來自分流而非真實異常, 請確認。"
+        elif upstream_split:
+            topology_hint = " ⚠️ 拓樸提示: 上游單元有多條出流, 本單元只承接其中一條, 此差異可能來自上游分流, 請確認。"
 
         if diff_pct > 5:
-            severity = "不合理" if diff_pct > 20 else "待人工"
+            if self_split or upstream_split:
+                # 分流結構下, 從「不合理」降為「待人工」(需審查員確認是分流還是真異常)
+                severity = "待人工"
+            else:
+                severity = "不合理" if diff_pct > 20 else "待人工"
             direction = "多" if sum_in > sum_out else "少"
             findings.append({
                 "嚴重度": severity,
@@ -333,6 +327,7 @@ def check_q_balance(app_data):
                     f"進流比出流{direction} {diff_pct:.1f}%。"
                     f"水流非污泥側單元理論上 Q 守恆 (Σ進=Σ出), "
                     f"差異 > 5% 表示可能有漏記的支流或水質表填寫錯誤。"
+                    f"{topology_hint}"
                 ),
                 "依據": "質量守恆原理: 水流穩態下 Σ進=Σ出 (污泥側單元除外)",
             })

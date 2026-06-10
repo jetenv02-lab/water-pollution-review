@@ -363,35 +363,37 @@ def check_unit(unit, rules=None):
         if diff_pct <= effective_tol:
             continue  # 在容忍度內
 
-        # ── 加權平均濃度閘 ──
-        # 若本單元為「水量分流」, 質量看起來變化大但濃度其實沒變 → 跳過
-        # (技師備註: T01-21 慢混分流, 鋅濃度未改變, 但質量按 Σ 出/Σ 進看起來減 50%)
+        # ── 加權平均濃度提示 (改為提示, 不豁免) ──
+        # 若本單元為「水量分流」+ 濃度沒變, 仍出 finding 但降嚴重度 + 描述加註
+        topology_hint = ""
+        downgrade = False
         if self_split and in_q_sum > 0 and out_q_sum > 0:
             in_avg_c = in_conc_x_q / in_q_sum
             out_avg_c = out_conc_x_q / out_q_sum
             if in_avg_c > 0:
                 conc_diff_pct = abs(out_avg_c - in_avg_c) / in_avg_c * 100
                 if conc_diff_pct <= max(tol, 5.0):
-                    # 濃度沒明顯變 → 水量分流造成的質量變化, 不算去除
-                    # 寫進 unit 的 topology_notes 當備註, 不產 finding
-                    note_lines = unit.setdefault("topology_notes", [])
-                    note_lines.append(
-                        f"ℹ️ 拓樸提示: {item} 進出加權平均濃度 "
+                    # 濃度沒明顯變 → 水量分流造成的質量變化, 提示但不豁免
+                    topology_hint = (
+                        f" ⚠️ 拓樸提示: 進出加權平均濃度 "
                         f"{in_avg_c:.2f} → {out_avg_c:.2f} (Δ {conc_diff_pct:.1f}%), "
-                        f"質量差異 {diff_pct:.1f}% 來自水量分流而非實際去除。"
+                        f"濃度未明顯改變, 質量差異 {diff_pct:.1f}% 可能來自水量分流而非實際去除, "
+                        f"請確認後標記為合理(備註)或異常。"
                     )
-                    continue
+                    downgrade = True
 
         direction = "減少" if out_mass < in_mass else "增加"
+        # 若分流結構 + 濃度未變, 嚴重度降為「待人工」
+        eff_sev = "待人工" if downgrade else severity
         findings.append({
-            "嚴重度": severity,
+            "嚴重度": eff_sev,
             "類型": "質量平衡",
             "單元": code,
             "標準槽體": std_tank,
             "對照項目": item,
             "描述": (
                 f"{item} 質量 進 {in_mass:.3f} → 出 {out_mass:.3f} kg/d "
-                f"({direction} {diff_pct:.1f}%, 容忍 {tol}%)。{desc_text}"
+                f"({direction} {diff_pct:.1f}%, 容忍 {tol}%)。{desc_text}{topology_hint}"
             ),
             "依據": f"_槽體學理 規則: {std_tank} ({rule['加藥類型']})",
         })
