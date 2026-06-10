@@ -795,6 +795,9 @@ with tab1:
                 if st.session_state.get("_cancel_requested"):
                     raise RuntimeError("使用者已要求停止")
                 app_data_local = extract_application(tmp_path, verbose=False)
+                # 修正: extract_application 拿 tmp_path 當 source_pdf, 蓋回真正的上傳檔名
+                if app_data_local and getattr(uploaded, 'name', None):
+                    app_data_local['source_pdf'] = uploaded.name
                 _render_overlay(p1_end, f"{_S(1)} · 完成 (共 {app_data_local['total_units']} 個處理單元)", _eta(p1_end))
 
                 # 存到 session
