@@ -237,10 +237,19 @@ def extract_one_page(pil_image, api_key=None):
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
+    # 使用容錯 JSON 解析 (Gemini 偶爾回傳格式有問題)
     try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"JSON 解析失敗: {e}", "raw_response": raw[:500]}
+        from json_tolerant import parse_json_tolerant
+        parsed, parse_err = parse_json_tolerant(raw)
+    except ImportError:
+        try:
+            parsed = json.loads(raw)
+            parse_err = None
+        except json.JSONDecodeError as e:
+            parsed = None
+            parse_err = e
+    if parsed is None:
+        return {"ok": False, "error": f"JSON 解析失敗: {parse_err}", "raw_response": raw[:500]}
 
     usage = {}
     if response.usage_metadata:
