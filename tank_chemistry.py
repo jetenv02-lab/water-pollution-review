@@ -351,7 +351,9 @@ def check_unit(unit, rules=None):
             continue
 
         diff_pct = abs(out_mass - in_mass) / in_mass * 100
-        if diff_pct <= tol:
+        # 絕對最小容忍 0.5% (避免 PDF 抽取的舍入誤差被當成違規)
+        effective_tol = max(tol, 0.5)
+        if diff_pct <= effective_tol:
             continue  # 在容忍度內
 
         # ── 加權平均濃度閘 ──
