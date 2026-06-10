@@ -47,6 +47,64 @@ DOSING_RULES = {
     },
 }
 
+def load_dosing_rules_from_xlsx(xlsx_path=None):
+    """從 規則庫.xlsx 的 _加藥規則 分頁讀規則, 失敗 fallback 到 DOSING_RULES."""
+    import os
+    if xlsx_path is None:
+        xlsx_path = os.path.join(os.path.dirname(__file__), '規則庫.xlsx')
+    if not os.path.exists(xlsx_path):
+        return DOSING_RULES
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        if '_加藥規則' not in wb.sheetnames:
+            wb.close()
+            return DOSING_RULES
+        ws = wb['_加藥規則']
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+    except Exception:
+        return DOSING_RULES
+
+    def _split(s):
+        if not s: return []
+        return [x.strip() for x in str(s).replace('，', ',').split(',') if x.strip()]
+
+    def _to_float(v):
+        try: return float(v) if v not in (None, '') else None
+        except: return None
+
+    rules = {}
+    for r in rows:
+        if not r or not r[0]: continue
+        r = list(r) + [None] * (8 - len(r))
+        sys_name, aliases, should, should_not, ph_min, ph_max, sludge_code, desc = r[:8]
+        rules[str(sys_name).strip()] = {
+            'should': _split(should),
+            'should_not': _split(should_not),
+            'aliases': _split(aliases),
+            'ph_min': _to_float(ph_min),
+            'ph_max': _to_float(ph_max),
+            'sludge_code': str(sludge_code or '').strip(),
+            '說明': str(desc or '').strip(),
+        }
+    return rules if rules else DOSING_RULES
+
+
+# 模組載入時讀一次規則 (cache)
+_CACHED_RULES = None
+
+def get_rules():
+    global _CACHED_RULES
+    if _CACHED_RULES is None:
+        _CACHED_RULES = load_dosing_rules_from_xlsx()
+    return _CACHED_RULES
+
+def clear_rules_cache():
+    global _CACHED_RULES
+    _CACHED_RULES = None
+
+
 # 鎳系/輕系/各系 偵測關鍵字
 SYSTEM_DETECT = [
     # (關鍵字 list, 系統名)
@@ -96,8 +154,36 @@ def get_ph_max(measure_params):
 def check_dosing_chemistry(unit):
     """檢查單元的加藥機制是否符合分流系統學理。
 
+    限縮: 只查「反應」型槽體 (pH調整池/快混/慢混/中和/氧化還原)
+    收集池/調整池/沉澱池/儲槽 = 非反應型, 本來就不該加藥, 跳過
+
     Returns: list of findings
     """
+    # ── 類型過濾: 只查反應型槽體 ──
+    # 用 _槽體學理 的「類型」欄判斷
+    try:
+        import tank_chemistry as _tc
+        rule = _tc.get_rule_for_unit(unit)
+        if rule:
+            unit_type = rule.get("類型", "")
+            # 非反應型直接跳過 (收集/儲存/分離/生物/污泥 本來就不該加藥反應)
+            if unit_type and unit_type != "反應":
+                return []
+    except Exception:
+        # 規則庫沒載入時, 用單元名稱簡單篩選 (fallback)
+        pass
+
+    # ── 名稱 fallback 篩選 ──
+    # 沒類型欄時, 用單元名稱判斷
+    name = (unit.get("name_in_doc") or "").lower()
+    # 一定不查的槽體類型 (從名稱)
+    skip_keywords = ["收集池", "調整池", "儲槽", "貯槽", "貯留", "暫存",
+                     "沉澱池", "沉降池", "濃縮槽", "污泥", "脫水",
+                     "中間池", "緩衝", "放流池", "曝氣槽", "接觸氧化",
+                     "活性碳", "離子交換", "砂濾"]
+    for kw in skip_keywords:
+        if kw in name:
+            return []
     findings = []
     system, kw = detect_system(unit)
     if not system:
@@ -105,7 +191,7 @@ def check_dosing_chemistry(unit):
 
     code = unit.get("raw_code") or unit.get("code") or "?"
     std_tank = unit.get("std_tank", "")
-    rule = DOSING_RULES.get(system)
+    rule = get_rules().get(system)
     if not rule:
         return findings
 
@@ -180,9 +266,97 @@ def check_dosing_chemistry(unit):
     return findings
 
 
-def run_dosing_checks(app_data):
-    """對所有單元跑加藥機制檢查。"""
+def check_sludge_classification(app_data):
+    """檢查 B: 鎳系污泥沒區別於各系污泥 (廢棄物分類問題)。
+
+    學理:
+        - 鎳系污泥 = Ni(OH)₂ 沉澱物, 屬「有害事業廢棄物」(代碼 D-1101)
+        - 各系污泥 = 混凝沉澱物, 屬「一般事業廢棄物」(代碼 D-2299)
+        - 兩者法規上必須分開收集、貯存、清運
+
+    檢查:
+        - 廠內若有鎳系廢水處理 → 應該有獨立的「鎳系污泥儲槽」
+        - 鎳系污泥 + 各系污泥混合進同一槽 → ❌ 廢棄物分類錯誤
+    """
     findings = []
+    units = app_data.get("units", {})
+
+    # 是否有鎳系廢水處理?
+    has_ni_system = False
+    for unit in units.values():
+        n = unit.get("name_in_doc", "") or ""
+        if any(k in n for k in ["鎳系", "聶系", "鎳水洗", "化學鎳", "鍍鎳", "化銅"]):
+            has_ni_system = True
+            break
+
+    if not has_ni_system:
+        return findings
+
+    # 有鎳系 → 找污泥相關單元
+    sludge_units = []
+    ni_sludge_units = []
+    general_sludge_units = []
+    for code, unit in units.items():
+        n = unit.get("name_in_doc", "") or ""
+        st = unit.get("std_tank", "") or ""
+        # 是污泥單元嗎
+        is_sludge = ("污泥" in n or "污泥" in st or
+                     "脫水" in n or "脫水" in st or
+                     "濃縮" in n or "濃縮" in st)
+        if not is_sludge:
+            continue
+        sludge_units.append((code, n))
+        # 鎳系污泥 vs 各系污泥
+        if any(k in n for k in ["鎳系", "聶系", "鎳", "重金屬"]):
+            ni_sludge_units.append((code, n))
+        elif any(k in n for k in ["各系", "綜合", "混合", "一般"]):
+            general_sludge_units.append((code, n))
+
+    if not sludge_units:
+        return findings  # 沒污泥單元, 不查
+
+    # 異常 1: 沒看到「鎳系污泥」獨立槽
+    if has_ni_system and not ni_sludge_units:
+        findings.append({
+            "嚴重度": "不合理",
+            "類型": "加藥機制",
+            "單元": "(全廠)",
+            "標準槽體": "污泥儲槽",
+            "對照項目": "鎳系污泥分類",
+            "描述": (
+                f"廠內有鎳系廢水處理 (檢出 {sum(1 for u in units.values() if any(k in (u.get('name_in_doc','') or '') for k in ['鎳系','聶系']))} 個鎳系單元), "
+                f"但沒看到獨立的「鎳系污泥」儲槽/脫水機。"
+                f"鎳系污泥屬有害事業廢棄物 (代碼 D-1101), 法規上應跟一般污泥分開收集、貯存、清運; "
+                f"若混入各系污泥槽會造成廢棄物分類錯誤。"
+            ),
+            "依據": "事業廢棄物清理法 + 環境部公告事業廢棄物代碼 (D-1101: 含重金屬污泥)",
+        })
+
+    # 異常 2: 鎳系污泥 + 各系污泥同一槽
+    # (這需要更精細的單元對應, 目前先以「都是污泥單元」但沒鎳系標記 = 可疑判斷)
+    if has_ni_system and not ni_sludge_units and general_sludge_units:
+        for code, n in general_sludge_units:
+            findings.append({
+                "嚴重度": "待人工",
+                "類型": "加藥機制",
+                "單元": code,
+                "標準槽體": "污泥儲槽",
+                "對照項目": "鎳系污泥分類",
+                "描述": (
+                    f"此單元 ({n}) 是非鎳系污泥儲槽, 但廠內有鎳系廢水處理。"
+                    f"請確認鎳系污泥是否混入此槽; 若是, 違反廢棄物分類規定。"
+                ),
+                "依據": "事業廢棄物清理法 + 環境部公告事業廢棄物代碼",
+            })
+
+    return findings
+
+
+def run_dosing_checks(app_data):
+    """對所有單元跑加藥機制檢查 (含污泥分類)。"""
+    # B: 全廠級別 — 鎳系污泥分類
+    findings = list(check_sludge_classification(app_data))
+    # 原本逐單元檢查 (A: 已限縮到反應型)
     for code, unit in app_data.get("units", {}).items():
         try:
             findings.extend(check_dosing_chemistry(unit))
