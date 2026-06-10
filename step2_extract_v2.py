@@ -640,12 +640,21 @@ def parse_quality_page(text):
             if mq2:
                 item = mq2.group(1).strip()
                 # 判斷這 2 個數字歸進流還出流:
-                # 若 infl_code 空 + effl_code 有 → 這是出流 (例: T01-21 第二條出流)
-                # 否則預設歸進流
+                # 規則:
+                #   (a) infl_code 空 + effl_code 有 → 出流 (例: 邑昇 T01-21 第二條出流, 整段沒進流欄)
+                #   (b) infl_code 有 + effl_code 空 → 進流 (反過來, 較少見)
+                #   (c) infl_code/effl_code 都有 (進出表同時存在), 但這項只有 2 數字
+                #       → 預設歸「出流」 (PDF 填表慣例: 出流通常都填, 進流偶爾空白)
+                #       例: 馥廷 T01-07 銅 0.92 0.002337 = 進流空, 出流有
+                v1 = float(mq2.group(2))
+                v2 = float(mq2.group(3))
                 if not infl_code and effl_code:
-                    effl_q[item] = {"濃度": float(mq2.group(2)), "質量": float(mq2.group(3))}
+                    effl_q[item] = {"濃度": v1, "質量": v2}
+                elif infl_code and not effl_code:
+                    infl_q[item] = {"濃度": v1, "質量": v2}
                 else:
-                    infl_q[item] = {"濃度": float(mq2.group(2)), "質量": float(mq2.group(3))}
+                    # 進出 code 都有, 但此項只 2 數字 → 默認歸出流 (填表慣例)
+                    effl_q[item] = {"濃度": v1, "質量": v2}
                 continue
             # pH/水溫: "pH值 1 ~ 7 - 6 ~ 9 -"
             mph = re.match(
@@ -665,10 +674,13 @@ def parse_quality_page(text):
             if mph2:
                 item = mph2.group(1).strip()
                 rng = {"範圍": f"{mph2.group(2)}~{mph2.group(3)}"}
+                # 同 mq2 邏輯: 進出 code 都有時, 默認歸出流
                 if not infl_code and effl_code:
                     effl_q[item] = rng
-                else:
+                elif infl_code and not effl_code:
                     infl_q[item] = rng
+                else:
+                    effl_q[item] = rng
 
         if current_unit:
             results.append({
