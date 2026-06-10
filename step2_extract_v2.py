@@ -702,29 +702,45 @@ def extract_application(pdf_path, verbose=True):
             print(f"  進出水質資料: {len(quality_pages)} 頁")
 
         # 解析設施資料表 → 取單元 metadata + 設計/量測/機具 + 尺寸
+        # 同一頁可能有多個單元宣告 (例如污泥章節 p46: T01-19/20/21 三個在同一頁)
+        # 故先用 PATTERN.findall 切片, 每段呼叫 parse_facility_page
         for page_idx, text, page_obj in facility_pages:
-            unit = parse_facility_page(text, page_idx)
-            if unit:
-                code = unit["raw_code"]
-                # 從表格抽單元尺寸 (材質 / 長/直徑 / 寬 / 高 / 有效水深 / 有效容量 / 數量)
-                try:
-                    size_info = extract_unit_size(page_obj)
-                except Exception:
-                    size_info = {}
-                if size_info:
-                    unit["size"] = size_info
+            # 找所有單元宣告位置, 切片
+            header_iter = list(UNIT_HEADER_PATTERN.finditer(text))
+            if len(header_iter) == 0:
+                segments = [text]
+            elif len(header_iter) == 1:
+                segments = [text]
+            else:
+                # 多個宣告 → 切片
+                segments = []
+                for i, m in enumerate(header_iter):
+                    start = m.start()
+                    end = header_iter[i+1].start() if i+1 < len(header_iter) else len(text)
+                    segments.append(text[start:end])
+            for seg in segments:
+                unit = parse_facility_page(seg, page_idx)
+                if unit:
+                    code = unit["raw_code"]
+                    # 從表格抽單元尺寸 (材質 / 長/直徑 / 寬 / 高 / 有效水深 / 有效容量 / 數量)
+                    try:
+                        size_info = extract_unit_size(page_obj)
+                    except Exception:
+                        size_info = {}
+                    if size_info:
+                        unit["size"] = size_info
 
-                if code in units:
-                    # 已存在:合併 (有時跨頁)
-                    units[code]["pages_found"].append(page_idx + 1)
-                    units[code]["design_params"].update(unit["design_params"])
-                    units[code]["measure_params"].update(unit["measure_params"])
-                    units[code]["equipment"].extend(unit["equipment"])
-                    # 尺寸: 只在原本沒有時填入 (避免覆蓋已抽到的)
-                    if size_info and not units[code].get("size"):
-                        units[code]["size"] = size_info
-                else:
-                    units[code] = unit
+                    if code in units:
+                        # 已存在:合併 (有時跨頁)
+                        units[code]["pages_found"].append(page_idx + 1)
+                        units[code]["design_params"].update(unit["design_params"])
+                        units[code]["measure_params"].update(unit["measure_params"])
+                        units[code]["equipment"].extend(unit["equipment"])
+                        # 尺寸: 只在原本沒有時填入 (避免覆蓋已抽到的)
+                        if size_info and not units[code].get("size"):
+                            units[code]["size"] = size_info
+                    else:
+                        units[code] = unit
 
         # 解析進出水質 → 加進對應單元
         # 修: 把所有 quality_pages 串成一段, 讓 parse_quality_page 的「current_unit」
