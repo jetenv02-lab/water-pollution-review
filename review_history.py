@@ -38,6 +38,9 @@ HEADERS = [
     "處理單元數",     # 新增
     "耗時(秒)",       # 新增
     "規則庫版本",     # 新增 (commit hash 或 timestamp)
+    "run_id",        # 新增: 對應 review_snapshot 的 run_id (例: R0042)
+    "report_path",   # 新增: Excel 快照相對路徑 (例: review_runs/邑昇_..xlsx)
+    "json_path",     # 新增: JSON 快照相對路徑
 ]
 
 
@@ -149,6 +152,10 @@ def append_review_record(record, sheet_id=None):
             int(record.get("units", 0)),
             int(record.get("elapsed_sec", 0)),
             rule_version,
+            # 新增 3 欄: 對應 review_snapshot 模組
+            record.get("run_id", ""),
+            record.get("snapshot_report_path", ""),
+            record.get("snapshot_json_path", ""),
         ]
         ws.append_row(row, value_input_option="USER_ENTERED")
 

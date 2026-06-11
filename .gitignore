@@ -32,6 +32,9 @@ gen_secrets_toml.py
 backup/
 *.bak
 
+# 審查快照目錄 (本機, 不上傳)
+review_runs/
+
 # IDE
 .vscode/
 .idea/

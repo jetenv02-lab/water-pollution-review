@@ -2309,6 +2309,17 @@ with tab1:
             for k in _xrp.OPTION_LABELS:
                 _opts[k] = bool(st.session_state.get(f"_export_opt_{k}", False))
 
+            # 儲存快照選項 (只在 internal Excel 對象生效, 其他對象不顯示)
+            _save_snapshot = False
+            if _target == "internal":
+                _save_snapshot = st.checkbox(
+                    "💾 儲存本次內部覆核快照 (存 review_runs/, 自動歸檔)",
+                    value=st.session_state.get("_export_save_snapshot", False),
+                    key="_export_save_snapshot",
+                    help="存 Excel + JSON 各一份到本機 review_runs/ 資料夾。"
+                         "30 天後自動壓縮、90 天後只留 JSON。Sheets _審查紀錄 會記下 run_id。"
+                )
+
             try:
                 _data, _fname, _mime = _xrp.build_export(
                     _target, app_data, _findings, _opts, base_name=base_name
@@ -2321,6 +2332,54 @@ with tab1:
                     width="stretch",
                     type="primary",
                 )
+
+                # 儲存快照
+                if _save_snapshot and _target == "internal":
+                    try:
+                        import review_snapshot as _rs
+                        # 同時也產 JSON 給快照用 (即使使用者選 internal 也順手存 JSON)
+                        _json_data, _, _ = _xrp.build_export(
+                            "json", app_data, _findings, _opts, base_name=base_name
+                        )
+                        # 統計 findings
+                        _fc = {"不合理": 0, "待人工": 0, "錯誤": 0}
+                        for f in _findings:
+                            sev = f.get("嚴重度", "")
+                            if sev in _fc:
+                                _fc[sev] += 1
+                        _snap_result = _rs.save_snapshot(
+                            excel_bytes=_data,
+                            json_bytes=_json_data,
+                            base_name=base_name,
+                            findings_count=_fc,
+                        )
+                        if _snap_result.get("ok"):
+                            st.success(
+                                f"✅ 快照已儲存: **{_snap_result['run_id']}** "
+                                f"({_snap_result['size_bytes']/1024:.1f} KB) | "
+                                f"📁 {_snap_result['report_path']} | "
+                                f"📁 {_snap_result['json_path']}"
+                            )
+                            # 同步寫到 Sheets _審查紀錄
+                            try:
+                                import review_history
+                                review_history.append_review_record({
+                                    "filename": base_name,
+                                    "unreasonable": _fc["不合理"],
+                                    "manual": _fc["待人工"],
+                                    "units": len(app_data.get("units") or {}),
+                                    "elapsed_sec": 0,
+                                    "run_id": _snap_result["run_id"],
+                                    "snapshot_report_path": _snap_result["report_path"],
+                                    "snapshot_json_path": _snap_result["json_path"],
+                                })
+                                st.caption(f"🔗 _審查紀錄 已寫入 ({_snap_result['run_id']})")
+                            except Exception as _hist_e:
+                                st.caption(f"⚠️ Sheets 寫入失敗 (快照仍保存): {_hist_e}")
+                        else:
+                            st.warning(f"⚠️ 快照儲存失敗: {_snap_result.get('error', '?')}")
+                    except Exception as _snap_e:
+                        st.warning(f"⚠️ 快照儲存錯誤: {_snap_e}")
             except RuntimeError as _e:
                 st.error(f"產生失敗: {_e}")
                 if "python-docx" in str(_e):
