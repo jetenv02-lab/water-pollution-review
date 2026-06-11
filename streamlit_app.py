@@ -1632,31 +1632,91 @@ with tab1:
                             new_upstream.append(u)  # 保留原本的 (外部進入)
                     upstream = new_upstream
 
-                # 來源 2: 示意圖解析 (補沒被 PDF 配對到的)
+                # 來源 2: 示意圖解析 (補拓樸, 不覆蓋 PDF)
+                # 原則: PDF (step2) 為主, Vision 只補「拓樸資訊」, 不覆蓋 Q 值
+                # 不一致時加警告供使用者交叉比對
                 _fr = st.session_state.get("_flow_extract_result")
                 if _fr and _fr.get("ok"):
-                    existing_wm = {str(u.get("from_stream", "")) for u in upstream}
-                    existing_d = {str(d.get("to_stream", "")) for d in downstream}
+                    # 用 to_stream 判斷是否重複 (而非 from_stream, 因為 PDF 配對失敗時 from_stream 是 "WM?")
+                    existing_to_streams = {str(u.get("to_stream", "")) for u in upstream}
+                    existing_to_units = {str(d.get("to_unit", "")) for d in downstream}
+
                     for ei in _fr.get("all_external_inputs", []) or []:
-                        if ei.get("to_unit") == selected and ei.get("code") not in existing_wm:
+                        if ei.get("to_unit") != selected:
+                            continue
+                        vision_to_stream = ei.get("to_stream") or ""
+                        vision_q = ei.get("Q_cmd")
+
+                        # 找該 to_stream 是否已存在 (PDF 已提供)
+                        match_idx = None
+                        for i, u in enumerate(upstream):
+                            if str(u.get("to_stream", "")) == vision_to_stream:
+                                match_idx = i
+                                break
+
+                        if match_idx is not None:
+                            # PDF 已有此 stream, 用 Vision 補資訊 (例: WM 名稱), 不覆蓋 Q
+                            existing = upstream[match_idx]
+                            pdf_q = existing.get("_q_cmd")
+                            # 補 WM code 名稱
+                            vision_code = ei.get("code")
+                            if vision_code and existing.get("from_stream") in ("WM?", None, ""):
+                                existing["from_stream"] = vision_code
+                                existing["from_unit"] = f"🌊 {vision_code} (PDF 配對失敗, Vision 補)"
+                                existing["_vision_supplement"] = True
+                            # Q 不一致時加警告
+                            if pdf_q is not None and vision_q is not None:
+                                try:
+                                    if pdf_q > 0 and abs(float(vision_q) - float(pdf_q)) / float(pdf_q) > 0.2:
+                                        existing["_q_warning"] = (
+                                            f"⚠️ PDF Q={pdf_q:g} vs 示意圖 Q={vision_q:g} "
+                                            f"(差 {abs(float(vision_q)-float(pdf_q))/float(pdf_q)*100:.0f}%)。以 PDF 為準。"
+                                        )
+                                except (ValueError, TypeError, ZeroDivisionError):
+                                    pass
+                        else:
+                            # PDF 沒此 stream, 完全新增 (Vision 補拓樸)
                             upstream.append({
                                 "from_unit": f"🌊 {ei.get('code', 'WM?')}",
                                 "from_stream": ei.get("code", "WM?"),
-                                "to_stream": ei.get("to_stream") or "(原廢水)",
+                                "to_stream": vision_to_stream or "(原廢水)",
                                 "confidence": "中",
-                                "method": "示意圖解析 (Gemini Vision)",
+                                "method": "示意圖解析 (Gemini Vision, 拓樸補充)",
                                 "_source": "diagram",
                                 "_extra_name": ei.get("name", ""),
-                                "_q_cmd": ei.get("Q_cmd"),
+                                "_q_cmd": vision_q,
                             })
                     for dp in _fr.get("all_discharge_points", []) or []:
-                        if dp.get("from_unit") == selected and dp.get("code") not in existing_d:
+                        if dp.get("from_unit") != selected:
+                            continue
+                        vision_dp_code = dp.get("code", "D?")
+                        # 找下游是否已有此放流口
+                        match_idx = None
+                        for i, d in enumerate(downstream):
+                            if str(d.get("to_unit", "")).endswith(vision_dp_code):
+                                match_idx = i
+                                break
+
+                        if match_idx is not None:
+                            existing_d_item = downstream[match_idx]
+                            pdf_q = existing_d_item.get("_q_cmd")
+                            vision_q = dp.get("Q_cmd")
+                            if pdf_q is not None and vision_q is not None:
+                                try:
+                                    if pdf_q > 0 and abs(float(vision_q) - float(pdf_q)) / float(pdf_q) > 0.2:
+                                        existing_d_item["_q_warning"] = (
+                                            f"⚠️ PDF Q={pdf_q:g} vs 示意圖 Q={vision_q:g} "
+                                            f"(差 {abs(float(vision_q)-float(pdf_q))/float(pdf_q)*100:.0f}%)。以 PDF 為準。"
+                                        )
+                                except (ValueError, TypeError, ZeroDivisionError):
+                                    pass
+                        else:
                             downstream.append({
                                 "from_stream": dp.get("from_stream") or "(放流)",
-                                "to_unit": f"🏁 {dp.get('code', 'D?')}",
-                                "to_stream": dp.get("code", "D?"),
+                                "to_unit": f"🏁 {vision_dp_code}",
+                                "to_stream": vision_dp_code,
                                 "confidence": "中",
-                                "method": "示意圖解析 (Gemini Vision)",
+                                "method": "示意圖解析 (Gemini Vision, 拓樸補充)",
                                 "_source": "diagram",
                                 "_extra_name": dp.get("name", ""),
                                 "_q_cmd": dp.get("Q_cmd"),
@@ -1669,6 +1729,7 @@ with tab1:
                         st.markdown(f"**上游 ({len(upstream)} 條進入)**")
                         if upstream:
                             up_rows = []
+                            warnings_up = []
                             for u in upstream:
                                 row = {
                                     "來源單元": u["from_unit"],
@@ -1678,15 +1739,22 @@ with tab1:
                                 if u.get("_q_cmd") is not None:
                                     row["Q (CMD)"] = f"{u['_q_cmd']:g}"
                                 up_rows.append(row)
+                                if u.get("_q_warning"):
+                                    warnings_up.append(u["_q_warning"])
                             st.dataframe(up_rows, width="stretch", hide_index=True)
                             if any(u.get("_source") == "diagram" for u in upstream):
                                 st.caption("🌊 = 原廢水 (來自示意圖解析)")
+                            if any(u.get("_vision_supplement") for u in upstream):
+                                st.caption("💡 「PDF 配對失敗, Vision 補」 = step2 找不到配對, 但示意圖補了 WM 編號")
+                            for _w in warnings_up:
+                                st.warning(_w)
                         else:
                             st.caption("(無偵測到上游, 可能是原廢水進入點或未串接)")
                     with cd:
                         st.markdown(f"**下游 ({len(downstream)} 條流出)**")
                         if downstream:
                             dn_rows = []
+                            warnings_dn = []
                             for d in downstream:
                                 row = {
                                     "出流編號": d["from_stream"],
@@ -1696,9 +1764,13 @@ with tab1:
                                 if d.get("_q_cmd") is not None:
                                     row["Q (CMD)"] = f"{d['_q_cmd']:g}"
                                 dn_rows.append(row)
+                                if d.get("_q_warning"):
+                                    warnings_dn.append(d["_q_warning"])
                             st.dataframe(dn_rows, width="stretch", hide_index=True)
                             if any(d.get("_source") == "diagram" for d in downstream):
                                 st.caption("🏁 = 放流口 (來自示意圖解析)")
+                            for _w in warnings_dn:
+                                st.warning(_w)
                         else:
                             st.caption("(無偵測到下游, 可能是放流口或未串接)")
 
