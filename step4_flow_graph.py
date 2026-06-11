@@ -64,18 +64,32 @@ def parse_stream_code(code):
 # ────────────────────────────────────────────────
 
 def quality_fingerprint(quality_dict, max_items=8):
-    """產生一股流的水質「指紋」 — 取主要項目濃度湊成 hashable tuple。"""
+    """產生一股流的水質「指紋」 — 取主要項目濃度湊成 hashable tuple。
+
+    支援兩種值格式:
+      {"濃度": N, "質量": M}  (step2 抽水質表的 stream)
+      "30" or "3~ 7"           (step2_raw_water 抽 WM 的 string)
+    """
     if not quality_dict:
         return None
-    # 取最多 max_items 個有「濃度」欄位的項目, 排序後組成 tuple
     items = []
     for item_name, v in quality_dict.items():
+        c = None
         if isinstance(v, dict):
             c = v.get("濃度")
-            try:
-                items.append((str(item_name), round(float(c), 3)))
-            except (TypeError, ValueError):
+        elif isinstance(v, (int, float)):
+            c = v
+        elif isinstance(v, str):
+            # WM 格式: 可能是 "30" 或 "3~ 7" 或 "15~ 35"
+            s = v.strip()
+            # 範圍類 (pH/水溫) 跳過, 因為不是濃度
+            if "~" in s or "-" in s:
                 continue
+            c = s
+        try:
+            items.append((str(item_name), round(float(c), 3)))
+        except (TypeError, ValueError):
+            continue
     items.sort()
     return tuple(items[:max_items])
 
@@ -119,6 +133,21 @@ def build_flow_graph(app_data):
                 "fingerprint": quality_fingerprint(q),
             }
 
+    # 1.5) 補加 WMxx (原廢水) 到 streams_index
+    # 從 app_data["raw_water"] 來 (step2_raw_water 抽的)
+    for wm_code, wm_data in (app_data.get("raw_water") or {}).items():
+        if wm_code in streams_index:
+            continue  # 已存在不覆蓋
+        wm_quality = wm_data.get("quality") or {}
+        streams_index[wm_code] = {
+            "kind_actual": "WM",
+            "owner_unit": wm_code,
+            "quality": wm_quality,
+            "fingerprint": quality_fingerprint(wm_quality),
+            "q_cmd": wm_data.get("q_cmd"),
+            "sources": wm_data.get("sources", []),
+        }
+
     # 2) 找 WM (原廢水進入點) 和 D (放流)
     wm_sources = sorted({code for code in streams_index if code.startswith("WM")})
     discharges = sorted({code for code in streams_index if code.startswith("D")})
@@ -129,30 +158,58 @@ def build_flow_graph(app_data):
     wta_codes = [c for c in streams_index if c.startswith("WTA")]
     wtb_codes = [c for c in streams_index if c.startswith("WTB")]
 
+    def _unit_seq(unit_code):
+        """T01-05 → 5; T02-03 → 203 (前綴 × 100 + 序號) 用於排序"""
+        import re
+        m = re.match(r"T(\d{2})-(\d+)", str(unit_code))
+        if m:
+            return int(m.group(1)) * 100 + int(m.group(2))
+        return -1
+
     matched_wtb = set()  # 已被某 WTA 配對的 WTB
     for wta in wta_codes:
         wta_info = streams_index[wta]
         wta_fp = wta_info.get("fingerprint")
         if not wta_fp:
             continue
-        # 找指紋相同的 WTB (且不是同一單元自己的 WTB)
+        wta_unit = wta_info["owner_unit"]
+        wta_seq = _unit_seq(wta_unit)
+        # 找所有指紋相同的候選 WTB
+        candidates = []
         for wtb in wtb_codes:
             if wtb in matched_wtb:
                 continue
             wtb_info = streams_index[wtb]
-            if wtb_info["owner_unit"] == wta_info["owner_unit"]:
+            if wtb_info["owner_unit"] == wta_unit:
                 continue  # 不能流向自己
-            if wtb_info.get("fingerprint") == wta_fp:
-                edges.append({
-                    "from_unit": wta_info["owner_unit"],
-                    "from_stream": wta,
-                    "to_unit": wtb_info["owner_unit"],
-                    "to_stream": wtb,
-                    "confidence": "高",
-                    "method": "水質指紋一致",
-                })
-                matched_wtb.add(wtb)
-                break  # 一個 WTA 只配對一個 WTB
+            if wtb_info.get("fingerprint") != wta_fp:
+                continue
+            wtb_unit = wtb_info["owner_unit"]
+            wtb_seq = _unit_seq(wtb_unit)
+            candidates.append((wtb, wtb_unit, wtb_seq))
+        if not candidates:
+            continue
+        # 優先序: WTB unit 序號 > WTA unit 序號 (合理下游) + 序號最近
+        # 計算「距離」: 同前綴下游 = 正距離; 不同前綴 = +1000; 往回 = +5000
+        def _dist(c):
+            wtb, wtb_unit, wtb_seq = c
+            # 同前綴 (T0X) 且下游
+            if wta_seq > 0 and wtb_seq > wta_seq:
+                same_prefix = (wta_unit[:3] == wtb_unit[:3])
+                return (wtb_seq - wta_seq) + (0 if same_prefix else 1000)
+            # 往回 (應該避開) — 給很大距離
+            return 5000 + abs(wtb_seq - wta_seq)
+        candidates.sort(key=_dist)
+        best_wtb, best_unit, _ = candidates[0]
+        edges.append({
+            "from_unit": wta_unit,
+            "from_stream": wta,
+            "to_unit": best_unit,
+            "to_stream": best_wtb,
+            "confidence": "高",
+            "method": "水質指紋一致 (多候選時取最近下游)",
+        })
+        matched_wtb.add(best_wtb)
 
     # 3.5) 沒被配對的 WTB → 來自外部 (WM 原廢水)
     # 例如 WTB01-01-6 沒對應的 WTA, 通常是從 WMxx 直接進來的
@@ -164,11 +221,59 @@ def build_flow_graph(app_data):
         wtb_fp = wtb_info.get("fingerprint")
         matched_wm = None
         if wtb_fp and wm_sources:
+            # 策略 1: 完全相符
             for wm in wm_sources:
                 wm_info = streams_index.get(wm, {})
                 if wm_info.get("fingerprint") == wtb_fp:
                     matched_wm = wm
                     break
+            # 策略 2: 部分相符 (共同項目 ≥ 2 個, 濃度差 ≤ 20% 視為配對)
+            # 處理 PDF 填表不一致時的容錯
+            if not matched_wm:
+                wtb_dict = dict(wtb_fp)  # tuple → dict
+                for wm in wm_sources:
+                    wm_info = streams_index.get(wm, {})
+                    wm_fp = wm_info.get("fingerprint")
+                    if not wm_fp:
+                        continue
+                    wm_dict = dict(wm_fp)
+                    common_keys = set(wtb_dict.keys()) & set(wm_dict.keys())
+                    if len(common_keys) < 2:
+                        continue
+                    matches = 0
+                    for k in common_keys:
+                        v1, v2 = wtb_dict[k], wm_dict[k]
+                        try:
+                            if v1 > 0 and abs(v1 - v2) / max(v1, v2) <= 0.2:
+                                matches += 1
+                        except (TypeError, ZeroDivisionError):
+                            pass
+                    # 至少 50% 共同項目接近 → 視為配對
+                    if matches >= max(1, len(common_keys) * 0.5):
+                        matched_wm = wm
+                        break
+
+        # 策略 3: 全廠只有一個 WM 時直接給它 (廠商填表不完整, 但邏輯上必有來源)
+        if not matched_wm and len(wm_sources) == 1:
+            matched_wm = wm_sources[0]
+
+        # 策略 4: 多 WM 但都對不上時 → 找「水質完全空的 WM」
+        # (廠商可能漏填某個 WM 的水質, 該 WM 對應的下游無法靠指紋抓)
+        if not matched_wm and len(wm_sources) > 1:
+            empty_wm = []
+            for wm in wm_sources:
+                wm_info = streams_index.get(wm, {})
+                wm_q = wm_info.get("quality") or {}
+                # 算「有濃度的項目」數量
+                has_conc = 0
+                for v in wm_q.values():
+                    if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip() and "~" not in v and "-" not in v):
+                        has_conc += 1
+                if has_conc == 0:
+                    empty_wm.append(wm)
+            # 只有一個空的 → 把這個未配對的 WTB 給它
+            if len(empty_wm) == 1:
+                matched_wm = empty_wm[0]
         if matched_wm:
             edges.append({
                 "from_unit": matched_wm,   # 例: WM08
