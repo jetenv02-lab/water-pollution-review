@@ -180,14 +180,17 @@ def build_flow_graph(app_data):
             })
             matched_wtb.add(wtb)
         else:
-            # 標成「外部進入」, 不知道確切來源 (可能是製程, 也可能 Gemini 才能讀)
+            # 配對失敗 — 系統不知道確切來源
+            # 不裝懂寫「外部進入」, 改寫「來源未配對」+ 提示
+            # (如果有開 Vision 解析, streamlit_app 會用 Vision 結果補真實編號;
+            #  如果 Vision 也沒結果, 顯示「來源待人工確認」讓使用者去看 PDF)
             edges.append({
-                "from_unit": "(外部進入)",
-                "from_stream": "WM?",
+                "from_unit": "? 來源未配對",
+                "from_stream": "?",
                 "to_unit": wtb_info["owner_unit"],
                 "to_stream": wtb,
                 "confidence": "低",
-                "method": "未配對 WTA, 推測為外部進入",
+                "method": "step2 配對失敗 (水質指紋不符任何 WTA 或 WM)",
             })
             matched_wtb.add(wtb)
 

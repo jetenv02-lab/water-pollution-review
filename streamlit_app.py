@@ -1583,7 +1583,9 @@ with tab1:
                     # 對每個用水質指紋配對 WM
                     new_upstream = []
                     for u in upstream:
-                        if u.get("from_unit") != "(外部進入)":
+                        # 判斷「未配對」: 新版 step4 用「? 來源未配對」, 舊版用「(外部進入)」
+                        from_unit = u.get("from_unit", "")
+                        if from_unit and not (from_unit.startswith("?") or from_unit == "(外部進入)"):
                             new_upstream.append(u)
                             continue
                         wtb_code = u.get("to_stream", "")
@@ -1629,7 +1631,7 @@ with tab1:
                                 "_sources": wm_data.get("sources", []),
                             })
                         else:
-                            new_upstream.append(u)  # 保留原本的 (外部進入)
+                            new_upstream.append(u)  # 保留原本的「? 來源未配對」
                     upstream = new_upstream
 
                 # 來源 2: 示意圖解析 (補拓樸, 不覆蓋 PDF)
@@ -1658,9 +1660,9 @@ with tab1:
                             # PDF 已有此 stream, 用 Vision 補資訊 (例: WM 名稱), 不覆蓋 Q
                             existing = upstream[match_idx]
                             pdf_q = existing.get("_q_cmd")
-                            # 補 WM code 名稱
+                            # 補 WM code 名稱 (若 PDF 配對失敗, from_stream="?")
                             vision_code = ei.get("code")
-                            if vision_code and existing.get("from_stream") in ("WM?", None, ""):
+                            if vision_code and existing.get("from_stream") in ("WM?", "?", None, ""):
                                 existing["from_stream"] = vision_code
                                 existing["from_unit"] = f"🌊 {vision_code} (PDF 配對失敗, Vision 補)"
                                 existing["_vision_supplement"] = True
