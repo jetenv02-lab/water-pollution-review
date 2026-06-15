@@ -96,8 +96,8 @@ def load_dosing_rules_from_xlsx(xlsx_path=None):
     rules = {}
     for r in rows:
         if not r or not r[0]: continue
-        r = list(r) + [None] * (14 - len(r))
-        rid, sys_name, tank_type, drug, role, ratio_min, ratio_max, conc_min, conc_max, ph_min, ph_max, water_quality, sludge_code, alias_desc = r[:14]
+        r = list(r) + [None] * (17 - len(r))
+        rid, sys_name, tank_type, drug, role, ratio_min, ratio_max, conc_min, conc_max, ph_min, ph_max, water_quality, sludge_code, alias_desc, stage, orp_min, orp_max = r[:17]
         if not sys_name or not drug:
             continue
         sys_name = str(sys_name).strip()
@@ -146,6 +146,10 @@ def load_dosing_rules_from_xlsx(xlsx_path=None):
                 'tank_type': str(tank_type or '').strip(),
                 'water_quality': str(water_quality or '').strip(),
                 'desc': desc,
+                # 新增 3 個欄位 (17 欄 schema)
+                'stage': str(stage or '').strip(),
+                'orp_min': _to_float(orp_min),
+                'orp_max': _to_float(orp_max),
             })
             # 更新系統級 pH 限制 (取最嚴格的)
             p_min = _to_float(ph_min)
