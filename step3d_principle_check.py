@@ -298,15 +298,15 @@ def check_q_balance(app_data):
 
         # 拓樸偵測 (產生提示, 不豁免 finding)
         # 「自己有多出流」(本單元 effluent ≥ 2 條) 或 「上游有多出流」
-        # → 屬「水量分流結構」, 仍出 finding 但加拓樸提示, 嚴重度降「待人工」
+        # → 屬「水量分流結構」, 仍出 finding 但加流向提示, 嚴重度降「待人工」
         self_split = (count_out >= 2) or (len(effluent) >= 2)
         topology_hint = ""
         if self_split and upstream_split:
-            topology_hint = " ⚠️ 拓樸提示: 本單元有多條出流, 且上游也是分流結構, 此差異可能來自水量分流而非真實異常, 請確認後標記為合理(備註)或異常。"
+            topology_hint = " ⚠️ 流向提示: 本單元有多條出流, 且上游也是分流結構, 此差異可能來自水量分流而非真實異常, 請確認後標記為合理(備註)或異常。"
         elif self_split:
-            topology_hint = " ⚠️ 拓樸提示: 本單元有多條出流(水量分流), 此差異可能來自分流而非真實異常, 請確認。"
+            topology_hint = " ⚠️ 流向提示: 本單元有多條出流(水量分流), 此差異可能來自分流而非真實異常, 請確認。"
         elif upstream_split:
-            topology_hint = " ⚠️ 拓樸提示: 上游單元有多條出流, 本單元只承接其中一條, 此差異可能來自上游分流, 請確認。"
+            topology_hint = " ⚠️ 流向提示: 上游單元有多條出流, 本單元只承接其中一條, 此差異可能來自上游分流, 請確認。"
 
         if diff_pct > 5:
             if self_split or upstream_split:

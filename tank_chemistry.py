@@ -375,7 +375,7 @@ def check_unit(unit, rules=None):
                 if conc_diff_pct <= max(tol, 5.0):
                     # 濃度沒明顯變 → 水量分流造成的質量變化, 提示但不豁免
                     topology_hint = (
-                        f" ⚠️ 拓樸提示: 進出加權平均濃度 "
+                        f" ⚠️ 流向提示: 進出加權平均濃度 "
                         f"{in_avg_c:.2f} → {out_avg_c:.2f} (Δ {conc_diff_pct:.1f}%), "
                         f"濃度未明顯改變, 質量差異 {diff_pct:.1f}% 可能來自水量分流而非實際去除, "
                         f"請確認後標記為合理(備註)或異常。"

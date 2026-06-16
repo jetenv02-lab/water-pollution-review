@@ -1839,10 +1839,10 @@ with tab1:
                         )
                     st.divider()
 
-            # 拓樸備註 (水量分流, 非異常)
+            # 流向備註 (水量分流, 非異常)
             _topo_notes = unit.get("topology_notes") or []
             if _topo_notes:
-                with st.expander(f"ℹ️ 拓樸備註 ({len(_topo_notes)} 則) — 水量分流/匯流, 非異常", expanded=False):
+                with st.expander(f"ℹ️ 流向備註 ({len(_topo_notes)} 則) — 水量分流/匯流, 非異常", expanded=False):
                     for _n in _topo_notes:
                         st.markdown(f"- {_n}")
 
