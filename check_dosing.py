@@ -322,7 +322,7 @@ def check_dosing_chemistry(unit):
                 "依據": f"學理: {system}分流加藥規則",
             })
 
-    # 3. 鎳系不該加 PAC/Polymer, 但 measure 有 → 警告 (可能整合單元?)
+    # 3. 鎳系不該加 PAC/Polymer, 但 measure 有 → 不合理 (學理硬性禁加)
     should_not_drugs = rule.get("should_not_drugs") or rule.get("should_not") or []
     if should_not_drugs and isinstance(should_not_drugs[0], dict):
         should_not_drugs = [d['drug'] for d in should_not_drugs]
@@ -330,7 +330,7 @@ def check_dosing_chemistry(unit):
         has_not = has_chemical(measure, should_not_drugs)
         if has_not:
             findings.append({
-                "嚴重度": "待人工",
+                "嚴重度": "不合理",
                 "類型": "加藥機制",
                 "單元": code,
                 "標準槽體": std_tank,
@@ -433,7 +433,7 @@ def check_sludge_classification(app_data):
     if has_ni_system and not ni_sludge_units and general_sludge_units:
         for code, n in general_sludge_units:
             findings.append({
-                "嚴重度": "待人工",
+                "嚴重度": "不合理",
                 "類型": "加藥機制",
                 "單元": code,
                 "標準槽體": "污泥儲槽",

@@ -349,7 +349,7 @@ def check_required_equipment(unit):
     for req in required:
         if req not in existing_str:
             findings.append({
-                "嚴重度": "待人工",
+                "嚴重度": "不合理",
                 "類型": "機具設施",
                 "單元": code,
                 "標準槽體": std_tank,

@@ -48,7 +48,7 @@ def check_unit_sanity(unit):
             # 一般沉澱池 30~50 m³/m²·d, 但有時申報 < 5 表示單位錯
             if v < 5 and "/d" not in raw and "日" not in raw:
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
@@ -65,7 +65,7 @@ def check_unit_sanity(unit):
         if "停留時間" in pname_str or "HRT" in pname_str.upper():
             if v > 100:  # 100 小時太離譜
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
@@ -78,7 +78,7 @@ def check_unit_sanity(unit):
                 })
             elif v < 0.005:  # < 0.005 hr = 18 秒
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
@@ -94,7 +94,7 @@ def check_unit_sanity(unit):
         if "流量" in pname_str or "處理水量" in pname_str or "處理量" in pname_str:
             if v > 1e6:  # > 100 萬 CMD 不合理
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
@@ -110,7 +110,7 @@ def check_unit_sanity(unit):
         if "G值" in pname_str or "G 值" in pname_str or "速度梯度" in pname_str:
             if v < 1:
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
@@ -123,7 +123,7 @@ def check_unit_sanity(unit):
                 })
             elif v > 5000:
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
@@ -140,7 +140,7 @@ def check_unit_sanity(unit):
             # kg/Ton 一般 < 1, 若 > 10 可能單位錯
             if v > 50:
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "不合理",
                     "類型": "文件一致性",
                     "單元": code,
                     "標準槽體": std,
