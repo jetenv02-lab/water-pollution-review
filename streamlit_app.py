@@ -150,6 +150,7 @@ HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 SEVERITY_FILL = {
     "不合理": PatternFill("solid", fgColor="FCE4D6"),
     "待人工": PatternFill("solid", fgColor="FFF2CC"),
+    "提醒": PatternFill("solid", fgColor="E2F0D9"),
     "合理": PatternFill("solid", fgColor="E2EFDA"),
 }
 WRAP = Alignment(wrap_text=True, vertical="top")
@@ -2006,7 +2007,7 @@ with tab1:
                 _cf3.metric("🟡 待人工", _sev.get("待人工", 0))
 
                 # 詳細列表 (依嚴重度排序, 不合理在前)
-                _sev_priority = {"不合理": 0, "待人工": 1, "錯誤": 2}
+                _sev_priority = {"不合理": 0, "待人工": 1, "提醒": 2, "錯誤": 3}
                 unit_findings_sorted = sorted(
                     unit_findings,
                     key=lambda f: (_sev_priority.get(f.get("嚴重度"), 9), f.get("類型", "")),
@@ -2018,7 +2019,7 @@ with tab1:
                 ):
                     for f in unit_findings_sorted:
                         sev = f.get("嚴重度", "?")
-                        emoji = {"不合理": "🔴", "待人工": "🟡", "錯誤": "⚪"}.get(sev, "⚪")
+                        emoji = {"不合理": "🔴", "待人工": "🟡", "提醒": "💡", "錯誤": "⚪"}.get(sev, "⚪")
                         with st.container(border=True):
                             st.markdown(
                                 f"{emoji} **{f.get('類型', '?')}** · {f.get('對照項目', '?')}"
@@ -2471,7 +2472,7 @@ with tab1:
                 # 每個類型用表格顯示
                 rows = []
                 for f in items:
-                    sev_emoji = {"不合理": "🔴", "待人工": "🟡"}.get(f["嚴重度"], "⚪")
+                    sev_emoji = {"不合理": "🔴", "待人工": "🟡", "提醒": "💡"}.get(f["嚴重度"], "⚪")
                     rows.append({
                         "嚴重": sev_emoji,
                         "單元": str(f["單元"]),

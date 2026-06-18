@@ -174,8 +174,8 @@ def check_sludge_balance(unit, app_data):
                 })
             elif implied_solids_pct < 0.05:
                 findings.append({
-                    "嚴重度": "待人工",
-                    "類型": "質量平衡",
+                    "嚴重度": "提醒",
+                    "類型": "數據異常",
                     "單元": code,
                     "標準槽體": std,
                     "對照項目": "脫水機進泥反推固形物",

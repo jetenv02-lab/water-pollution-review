@@ -124,10 +124,9 @@ def filter_findings(findings: list[dict], opts: dict) -> list[dict]:
     一律含: 不合理 + 待人工
     選用: 提醒 (include_reminder), 系統錯誤 (include_system_error)
     """
-    keep_sev = {"不合理", "待人工"}
+    keep_sev = {"不合理", "待人工", "提醒"}  # 「提醒」永遠含 (筆誤/錯別字)
     if opts.get("include_reminder"):
-        keep_sev.add("提醒")
-        keep_sev.add("其他")
+        keep_sev.add("其他")  # 額外 catch-all
     if opts.get("include_system_error"):
         keep_sev.add("錯誤")
     return [f for f in (findings or []) if f.get("嚴重度") in keep_sev]
@@ -281,6 +280,7 @@ def build_internal_excel(app_data: dict, findings: list[dict] | None = None,
         ["━━━ 審查結果統計 ━━━", ""],
         ["🔴 不合理", summary["不合理"]],
         ["🟡 待人工", summary["待人工"]],
+        ["💡 提醒/筆誤", summary["提醒"]],
         ["💡 提醒 / 其他", summary["提醒"] + summary["其他"]],
         ["⚠️ 系統錯誤", summary["錯誤"]],
         ["處理單元數", len(app_data.get("units") or {})],
