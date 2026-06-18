@@ -160,7 +160,7 @@ def check_rule_against_unit(rule, unit):
 
     回傳 dict 或 None:
         {
-            "嚴重度": "待人工",
+            "嚴重度": "待確認",
             "對照項目": "...",
             "描述": "...",
             "規則來源": rule.get("缺失ID") + 來源,
@@ -202,7 +202,7 @@ def check_rule_against_unit(rule, unit):
                         thr = float(threshold_match.group(1))
                         if lo < thr:
                             return _make_finding(
-                                "待人工", check_type, code, std_tank, target_item,
+                                "待確認", check_type, code, std_tank, target_item,
                                 f"{pname} 下限 {lo} 規則建議 > {thr} ({rule_text[:60]})",
                                 deficiency_id, source
                             )
@@ -211,7 +211,7 @@ def check_rule_against_unit(rule, unit):
                 else:
                     # 未抽到具體門檻 → 至少列出讓使用者人工檢查
                     return _make_finding(
-                        "待人工", check_type, code, std_tank, target_item,
+                        "待確認", check_type, code, std_tank, target_item,
                         f"申請文件 {pname} 範圍 {lo}~{hi}, 規則: {rule_text[:80]}",
                         deficiency_id, source
                     )
@@ -224,14 +224,14 @@ def check_rule_against_unit(rule, unit):
             lo, hi, pname = get_param_range({**design_params, **measure_params}, design_key)
             if pname:
                 return _make_finding(
-                    "待人工", check_type, code, std_tank, target_item,
+                    "待確認", check_type, code, std_tank, target_item,
                     f"申請文件 {pname} = {lo}~{hi}, 規則: {rule_text[:80]}",
                     deficiency_id, source
                 )
             # 規則指該項目但單元沒登載 → 也標記
             elif design_key in target_item and design_key in ["停留時間", "有效容量"]:
                 return _make_finding(
-                    "待人工", check_type, code, std_tank, target_item,
+                    "待確認", check_type, code, std_tank, target_item,
                     f"申請文件未登載『{design_key}』, 規則: {rule_text[:80]}",
                     deficiency_id, source
                 )
@@ -243,7 +243,7 @@ def check_rule_against_unit(rule, unit):
         if eq_kw in target_item or eq_kw in rule_text:
             if not has_equipment(equipment_list, eq_kw):
                 return _make_finding(
-                    "待人工", "機具設施", code, std_tank, target_item,
+                    "待確認", "機具設施", code, std_tank, target_item,
                     f"單元機具清單未列 {eq_kw}, 規則: {rule_text[:80]}",
                     deficiency_id, source
                 )
@@ -256,7 +256,7 @@ def check_rule_against_unit(rule, unit):
                 if isinstance(pval, dict):
                     raw = pval.get("raw", "")
                     return _make_finding(
-                        "待人工", check_type, code, std_tank, target_item,
+                        "待確認", check_type, code, std_tank, target_item,
                         f"{pname} = {raw[:50]}, 規則: {rule_text[:80]}",
                         deficiency_id, source
                     )
@@ -267,7 +267,7 @@ def check_rule_against_unit(rule, unit):
         # 只在 unit 有進出流時才列, 避免假陽性
         if unit.get("influent") and unit.get("effluent"):
             return _make_finding(
-                "待人工", "質量平衡", code, std_tank, target_item,
+                "待確認", "質量平衡", code, std_tank, target_item,
                 f"質量平衡需檢驗, 規則: {rule_text[:80]}",
                 deficiency_id, source
             )
@@ -281,7 +281,7 @@ def check_rule_against_unit(rule, unit):
             if c_in is not None and c_out is not None and c_in > 0:
                 removal = (c_in - c_out) / c_in * 100
                 return _make_finding(
-                    "待人工", "去除率", code, std_tank, target_item,
+                    "待確認", "去除率", code, std_tank, target_item,
                     f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%), 規則: {rule_text[:80]}",
                     deficiency_id, source
                 )
@@ -299,7 +299,7 @@ def check_rule_against_unit(rule, unit):
                         break
             if c_in is not None and c_out is not None:
                 return _make_finding(
-                    "待人工", check_type or "水質標準", code, std_tank, target_item,
+                    "待確認", check_type or "水質標準", code, std_tank, target_item,
                     f"{water_item} 進{c_in:.2f}→出{c_out:.2f}, 規則: {rule_text[:80]}",
                     deficiency_id, source
                 )
@@ -311,7 +311,7 @@ def check_rule_against_unit(rule, unit):
             for pname in {**measure_params, **design_params}.keys():
                 if op_kw in pname:
                     return _make_finding(
-                        "待人工", check_type or "操作條件", code, std_tank, target_item,
+                        "待確認", check_type or "操作條件", code, std_tank, target_item,
                         f"申請文件有相關參數 ({pname}), 規則: {rule_text[:80]}",
                         deficiency_id, source
                     )

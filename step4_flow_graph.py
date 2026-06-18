@@ -288,7 +288,7 @@ def build_flow_graph(app_data):
             # 配對失敗 — 系統不知道確切來源
             # 不裝懂寫「外部進入」, 改寫「來源未配對」+ 提示
             # (如果有開 Vision 解析, streamlit_app 會用 Vision 結果補真實編號;
-            #  如果 Vision 也沒結果, 顯示「來源待人工確認」讓使用者去看 PDF)
+            #  如果 Vision 也沒結果, 顯示「來源待確認確認」讓使用者去看 PDF)
             edges.append({
                 "from_unit": "? 來源未配對",
                 "from_stream": "?",

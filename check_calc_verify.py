@@ -101,7 +101,7 @@ def check_parameter_calc(unit):
 
             diff_pct = abs(calculated - reported) / max(calculated, reported) * 100
             if diff_pct > 5:
-                severity = "不合理" if diff_pct > 20 else "待人工"
+                severity = "不合理" if diff_pct > 20 else "待確認"
                 findings.append({
                     "嚴重度": severity,
                     "類型": "文件一致性",

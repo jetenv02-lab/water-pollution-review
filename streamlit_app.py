@@ -149,7 +149,7 @@ HEADER_FILL = PatternFill("solid", fgColor="2F5496")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 SEVERITY_FILL = {
     "不合理": PatternFill("solid", fgColor="FCE4D6"),
-    "待人工": PatternFill("solid", fgColor="FFF2CC"),
+    "待確認": PatternFill("solid", fgColor="FFF2CC"),
     "提醒": PatternFill("solid", fgColor="E2F0D9"),
     "合理": PatternFill("solid", fgColor="E2EFDA"),
 }
@@ -490,7 +490,7 @@ _rjd = st.session_state.pop("_review_just_done", None)
 if _rjd:
     st.success(
         f"✅ **基本審查已完成**! 共 {_rjd['units']} 單元 · "
-        f"找出 {_rjd['unreasonable']} 項不合理 / {_rjd['manual']} 項待人工複核 · "
+        f"找出 {_rjd['unreasonable']} 項不合理 / {_rjd['manual']} 項待確認複核 · "
         f"耗時 {_rjd['elapsed']} 秒"
     )
     st.info(
@@ -854,7 +854,7 @@ with tab1:
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
                 _render_overlay(p3_end, f"{_S(3)} · 規則庫驅動檢查 (規則庫 299 筆環工技師缺失)", _eta(p3_end))
                 findings_rule = run_rule_driven_check(app_data_local)
-                # 合併三層, 規則庫驅動的放最後 (一般是「待人工」性質)
+                # 合併三層, 規則庫驅動的放最後 (一般是「待確認」性質)
                 st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
 
                 # ─── Step 4: 水量平衡示意圖解析 (AI 視覺辨識, 可選) ───
@@ -913,7 +913,7 @@ with tab1:
                 _render_overlay(97, "整理結果並存檔...", "幾秒")
 
                 total_elapsed = _time.time() - t_start
-                stats = {"不合理": 0, "待人工": 0}
+                stats = {"不合理": 0, "待確認": 0}
                 for f in st.session_state["_check_findings"]:
                     sev = f.get("嚴重度")
                     if sev in stats:
@@ -922,7 +922,7 @@ with tab1:
                 st.session_state["_review_just_done"] = {
                     "units": app_data_local["total_units"],
                     "unreasonable": stats["不合理"],
-                    "manual": stats["待人工"],
+                    "manual": stats["待確認"],
                     "elapsed": int(total_elapsed),
                 }
 
@@ -942,7 +942,7 @@ with tab1:
                     "filename": uploaded.name,
                     "units": app_data_local["total_units"],
                     "unreasonable": stats["不合理"],
-                    "manual": stats["待人工"],
+                    "manual": stats["待確認"],
                     "elapsed_sec": int(total_elapsed),
                 }
                 st.session_state["_review_history"].insert(0, review_record)
@@ -971,7 +971,7 @@ with tab1:
                         _json_bytes, _, _ = _xrp_snap.build_export(
                             "json", app_data_local, _findings_all, _snap_opts, base_name=_base
                         )
-                        _snap_fc = {"不合理": stats["不合理"], "待人工": stats["待人工"], "錯誤": stats.get("錯誤", 0)}
+                        _snap_fc = {"不合理": stats["不合理"], "待確認": stats["待確認"], "錯誤": stats.get("錯誤", 0)}
                         _snap_result = _rs_snap.save_snapshot(
                             excel_bytes=_excel_bytes,
                             json_bytes=_json_bytes,
@@ -2004,10 +2004,10 @@ with tab1:
                 _cf1, _cf2, _cf3 = st.columns(3)
                 _cf1.metric("📋 本單元發現", len(unit_findings))
                 _cf2.metric("🔴 不合理", _sev.get("不合理", 0))
-                _cf3.metric("🟡 待人工", _sev.get("待人工", 0))
+                _cf3.metric("🟡 待確認", _sev.get("待確認", 0))
 
                 # 詳細列表 (依嚴重度排序, 不合理在前)
-                _sev_priority = {"不合理": 0, "待人工": 1, "提醒": 2, "錯誤": 3}
+                _sev_priority = {"不合理": 0, "待確認": 1, "提醒": 2, "錯誤": 3}
                 unit_findings_sorted = sorted(
                     unit_findings,
                     key=lambda f: (_sev_priority.get(f.get("嚴重度"), 9), f.get("類型", "")),
@@ -2019,7 +2019,7 @@ with tab1:
                 ):
                     for f in unit_findings_sorted:
                         sev = f.get("嚴重度", "?")
-                        emoji = {"不合理": "🔴", "待人工": "🟡", "提醒": "💡", "錯誤": "⚪"}.get(sev, "⚪")
+                        emoji = {"不合理": "🔴", "待確認": "🟡", "提醒": "💡", "錯誤": "⚪"}.get(sev, "⚪")
                         with st.container(border=True):
                             st.markdown(
                                 f"{emoji} **{f.get('類型', '?')}** · {f.get('對照項目', '?')}"
@@ -2329,7 +2329,7 @@ with tab1:
             st.session_state["_export_prev_target"] = _target
 
             # 全選 / 全取消 按鈕
-            st.markdown("**📦 包含內容** (一律含: 摘要 + 🔴不合理 + 🟡待人工)")
+            st.markdown("**📦 包含內容** (一律含: 摘要 + 🔴不合理 + 🟡待確認)")
             bcol1, bcol2, _bcol3 = st.columns([1, 1, 4])
             if bcol1.button("☑ 全選", key="_export_select_all"):
                 for k in _xrp.OPTION_LABELS:
@@ -2391,7 +2391,7 @@ with tab1:
 
         findings = st.session_state["_check_findings"]
 
-        # 統計 (合併「不合理」和「待人工」, 改用「審查類型」分組)
+        # 統計 (合併「不合理」和「待確認」, 改用「審查類型」分組)
         from collections import Counter
         type_counter = Counter(f.get("類型", "其他") for f in findings)
         sev_counter = Counter(f.get("嚴重度", "?") for f in findings)
@@ -2401,7 +2401,7 @@ with tab1:
         c1.metric("📋 總審查項", len(findings))
         c2.metric("🔴 明顯不合理", sev_counter.get("不合理", 0),
                   help="系統能 100% 自動判定為違反學理 (如快混槽展現重金屬去除)")
-        c3.metric("🟡 應人工複核", sev_counter.get("待人工", 0),
+        c3.metric("🟡 應人工複核", sev_counter.get("待確認", 0),
                   help="系統找出規則涉及的具體單元數值,需技師人工判讀是否合理")
         c4.metric("📊 涵蓋類型", len(type_counter))
 
@@ -2464,15 +2464,15 @@ with tab1:
             sev_summary_parts = []
             if sev_in_group.get("不合理"):
                 sev_summary_parts.append(f"🔴 {sev_in_group['不合理']} 不合理")
-            if sev_in_group.get("待人工"):
-                sev_summary_parts.append(f"🟡 {sev_in_group['待人工']} 待人工")
+            if sev_in_group.get("待確認"):
+                sev_summary_parts.append(f"🟡 {sev_in_group['待確認']} 待確認")
             sev_summary = " · ".join(sev_summary_parts)
 
             with st.expander(f"**{type_name}** ({len(items)} 筆) — {sev_summary}", expanded=True):
                 # 每個類型用表格顯示
                 rows = []
                 for f in items:
-                    sev_emoji = {"不合理": "🔴", "待人工": "🟡", "提醒": "💡"}.get(f["嚴重度"], "⚪")
+                    sev_emoji = {"不合理": "🔴", "待確認": "🟡", "提醒": "💡"}.get(f["嚴重度"], "⚪")
                     rows.append({
                         "嚴重": sev_emoji,
                         "單元": str(f["單元"]),
@@ -3510,7 +3510,7 @@ PDF 抽取完成後, 在主畫面往下捲動會看到「**📊 水量平衡示�
 
 切到「**📊 規則庫瀏覽**」分頁:
 - 看目前規則庫總筆數、依槽體分組、依嚴重度分布
-- 「📋 歷次審查紀錄」會列出所有跑過的審查 (檔名 / 單元數 / 不合理 / 待人工 / 耗時)
+- 「📋 歷次審查紀錄」會列出所有跑過的審查 (檔名 / 單元數 / 不合理 / 待確認 / 耗時)
 
 ## 🔄 規則庫管理
 

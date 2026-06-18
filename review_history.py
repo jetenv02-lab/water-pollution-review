@@ -4,7 +4,7 @@
 設計:
     - 每次 Streamlit「開始完整審查」完成 → 自動 append 一列到 Sheet
     - 沿用現有 _審查紀錄 分頁的表頭 (6 欄): 審查文件 / 不合理數量 / 審查結果 / 審查時間 / 審查次數 / 比對結果檔案位置
-    - 額外加 4 欄 (本次需要的): 待人工 / 處理單元數 / 耗時(秒) / 規則庫版本 / 同義字數
+    - 額外加 4 欄 (本次需要的): 待確認 / 處理單元數 / 耗時(秒) / 規則庫版本 / 同義字數
     - 失敗不致命 (沒設 service account 或 Sheet 沒分享, 都會 silent skip)
     - 時區: 強制台北 (Asia/Taipei, UTC+8), 不受 Streamlit Cloud 伺服器時區影響
 """
@@ -34,7 +34,7 @@ HEADERS = [
     "審查時間",
     "審查次數",
     "比對結果檔案位置",
-    "待人工",        # 新增
+    "待確認",        # 新增
     "處理單元數",     # 新增
     "耗時(秒)",       # 新增
     "規則庫版本",     # 新增 (commit hash 或 timestamp)
@@ -96,7 +96,7 @@ def append_review_record(record, sheet_id=None):
         record: dict, keys:
             - filename (str): 審查文件名
             - unreasonable (int): 不合理數量
-            - manual (int): 待人工數量
+            - manual (int): 待確認數量
             - units (int): 處理單元數
             - elapsed_sec (int): 耗時秒
             - result (str, 可選): 審查結果 (預設根據不合理數判斷)
@@ -126,7 +126,7 @@ def append_review_record(record, sheet_id=None):
             if unreasonable == 0 and manual == 0:
                 result = "合格(自動)"
             elif unreasonable == 0:
-                result = f"待人工 {manual} 項"
+                result = f"待確認 {manual} 項"
             else:
                 result = f"不合理 {unreasonable} 項"
 

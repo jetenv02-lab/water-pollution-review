@@ -14,7 +14,7 @@
     1) 找到該單元對應的『標準槽體類型』分頁(批次反應槽)
     2) 把該分頁的所有規則套用到該單元
     3) 嘗試從『判定邏輯』欄位機械化解析 IF-THEN
-       - 解析失敗 → 標記為「待人工判定」+ 規則原文
+       - 解析失敗 → 標記為「待確認判定」+ 規則原文
     4) 另外把『(文件類)』『(現場設備類)』的規則也納入比對(全域規則)
 
 依賴: openpyxl
@@ -69,7 +69,7 @@ def parse_ph_range(s):
 
 def evaluate_rule(rule, unit_info):
     """套用單一規則到單元資料,回傳 (是否觸發, 觸發描述)。
-    目前只實作 pH 範圍檢查,其他規則先回 (None, 規則原文+待人工判定)。
+    目前只實作 pH 範圍檢查,其他規則先回 (None, 規則原文+待確認判定)。
     """
     logic = (rule.get("判定邏輯(條件→結論)") or rule.get("判定邏輯") or "").strip()
     rule_text = (rule.get("規則(萃取/可比對判斷式)") or rule.get("規則") or "").strip()
@@ -79,7 +79,7 @@ def evaluate_rule(rule, unit_info):
     if "pH" in (rule.get("對照項目") or "") or "pH" in logic:
         lo, hi = parse_ph_range(ph_value)
         if lo is None:
-            return None, f"無法解析 pH(申請文件: {ph_value!r}) — 待人工"
+            return None, f"無法解析 pH(申請文件: {ph_value!r}) — 待確認"
         # 規則中 pH 下限門檻
         m = PH_LOWER_PATTERN.search(logic) or re.search(r"pH\s*下限\s*<\s*(\d+(?:\.\d+)?)", logic)
         if m:
@@ -119,7 +119,7 @@ def compare(app_json_path):
                 "規則來源": rule.get("來源", ""),
                 "檢查類型": rule.get("檢查類型", ""),
                 "對照項目": rule.get("對照項目", ""),
-                "判定": ("不合理" if triggered else "合理" if triggered is False else "待人工"),
+                "判定": ("不合理" if triggered else "合理" if triggered is False else "待確認"),
                 "描述": desc,
                 "規則原文": rule.get("規則(萃取/可比對判斷式)", rule.get("規則", "")),
                 "原文缺失": (rule.get("原文缺失") or "")[:200],
@@ -147,7 +147,7 @@ def compare(app_json_path):
             w.writerows(findings)
 
     # 統計
-    stats = {"不合理": 0, "合理": 0, "待人工": 0}
+    stats = {"不合理": 0, "合理": 0, "待確認": 0}
     for fi in findings:
         stats[fi["判定"]] += 1
 
@@ -155,7 +155,7 @@ def compare(app_json_path):
     print(f"總比對數: {len(findings)}")
     print(f"  不合理: {stats['不合理']}")
     print(f"  合理: {stats['合理']}")
-    print(f"  待人工: {stats['待人工']}")
+    print(f"  待確認: {stats['待確認']}")
     print(f"輸出: {out_json}")
     print(f"輸出: {out_csv}")
     return result

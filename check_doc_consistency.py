@@ -72,7 +72,7 @@ def check_cross_page_consistency(app_data):
                 continue
             diff_pct = abs(q_from_calc - max_reverse_q) / max(q_from_calc, max_reverse_q) * 100
             if diff_pct > 10:
-                severity = "不合理" if diff_pct > 30 else "待人工"
+                severity = "不合理" if diff_pct > 30 else "待確認"
                 findings.append({
                     "嚴重度": severity,
                     "類型": "文件一致性",
@@ -116,7 +116,7 @@ def check_diagram_presence(app_data, pdf_path=None):
         contents = n.get("contents", "")
         if any(kw in contents for kw in diagram_keywords):
             findings.append({
-                "嚴重度": "待人工",
+                "嚴重度": "待確認",
                 "類型": "文件一致性",
                 "單元": f"頁 {n.get('page', '?')}",
                 "標準槽體": "",
@@ -151,7 +151,7 @@ def check_diagram_presence(app_data, pdf_path=None):
                         if n_images == 0 and text_len > 500:
                             # 有大量文字但沒圖, 該頁可能是「該有圖但圖沒顯示」
                             findings.append({
-                                "嚴重度": "待人工",
+                                "嚴重度": "待確認",
                                 "類型": "文件一致性",
                                 "單元": f"頁 {pn}",
                                 "標準槽體": "",

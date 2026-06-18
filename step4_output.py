@@ -31,7 +31,7 @@ HEADER_FILL = PatternFill("solid", fgColor="2F5496")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 SEVERITY_FILL = {
     "不合理": PatternFill("solid", fgColor="FCE4D6"),  # 淺紅
-    "待人工": PatternFill("solid", fgColor="FFF2CC"),  # 淺黃
+    "待確認": PatternFill("solid", fgColor="FFF2CC"),  # 淺黃
     "合理": PatternFill("solid", fgColor="E2EFDA"),    # 淺綠
 }
 WRAP = Alignment(wrap_text=True, vertical="top")
@@ -122,7 +122,7 @@ def output_word(comparison, out_path):
 
     findings = comparison["findings"]
     not_ok = [r for r in findings if r["判定"] == "不合理"]
-    manual = [r for r in findings if r["判定"] == "待人工"]
+    manual = [r for r in findings if r["判定"] == "待確認"]
 
     doc.add_heading(f"一、自動判定不合理項目 ({len(not_ok)} 項)", level=1)
     if not_ok:
@@ -136,7 +136,7 @@ def output_word(comparison, out_path):
     else:
         doc.add_paragraph("(無)")
 
-    doc.add_heading(f"二、待人工複核項目 ({len(manual)} 項)", level=1)
+    doc.add_heading(f"二、待確認複核項目 ({len(manual)} 項)", level=1)
     by_unit = defaultdict(list)
     for r in manual:
         by_unit[r["申請單元"]].append(r)

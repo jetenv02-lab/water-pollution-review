@@ -184,7 +184,7 @@ def import_pdf(pdf_path, source_id=None):
         rows.append({
             "缺失ID": f"D{next_id:03d}",
             "來源": src_label,
-            "技師姓名": "(待人工填)",
+            "技師姓名": "(待確認填)",
             "序號": f"{sid} ({num})",
             "原文缺失": body_clean,
             "檢查類型": ctype,

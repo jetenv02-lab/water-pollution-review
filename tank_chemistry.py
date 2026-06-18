@@ -196,7 +196,7 @@ def load_rules(xlsx_path=None):
             "不應變動原始": str(deny_raw or "").strip(),
             "不應變動集合": expand_list(deny_raw),
             "容忍度": tol_pct,
-            "嚴重度": str(sev or "待人工").strip(),
+            "嚴重度": str(sev or "待確認").strip(),
             "學理說明": str(desc or "").strip(),
             "狀態": str(status or "").strip(),
             # 設計參數學理範圍 (新增)
@@ -383,8 +383,8 @@ def check_unit(unit, rules=None):
                     downgrade = True
 
         direction = "減少" if out_mass < in_mass else "增加"
-        # 若分流結構 + 濃度未變, 嚴重度降為「待人工」
-        eff_sev = "待人工" if downgrade else severity
+        # 若分流結構 + 濃度未變, 嚴重度降為「待確認」
+        eff_sev = "待確認" if downgrade else severity
         findings.append({
             "嚴重度": eff_sev,
             "類型": "質量平衡",

@@ -2,8 +2,8 @@
 """Step 3d: 進階學理檢查 (使用 step3c_unit_db 預設值)。
 
 新增的檢查項:
-1. 申請文件填的去除率 vs 預設削減率差異 (偏差 > 20% → 待人工)
-2. 申請文件原廢水濃度 vs 預設原廢水濃度 (差異 > 10 倍 → 待人工確認)
+1. 申請文件填的去除率 vs 預設削減率差異 (偏差 > 20% → 待確認)
+2. 申請文件原廢水濃度 vs 預設原廢水濃度 (差異 > 10 倍 → 待確認確認)
 3. 事業類別申報項目漏項 (依 BUSINESS_TYPES)
 4. RAS 迴流比合理性 (0.3~1.5 × Q_in)
 5. 質量平衡 Q 守恆檢查 (進流 vs 出流 ± 5%)
@@ -58,7 +58,7 @@ def check_removal_rate_vs_default(unit):
 
     對每個水質項目計算實際去除率 = (進-出)/進,
     再跟 step3c_unit_db 的預設值比對,
-    偏差 > 20 個百分點時標「待人工複核」。
+    偏差 > 20 個百分點時標「待確認複核」。
     """
     findings = []
     code = unit["raw_code"]
@@ -83,7 +83,7 @@ def check_removal_rate_vs_default(unit):
         actual_rate = (c_in - c_out) / c_in * 100
         diff = actual_rate - default_rate
         if abs(diff) > 20:
-            severity = "待人工" if abs(diff) <= 40 else "不合理"
+            severity = "待確認" if abs(diff) <= 40 else "不合理"
             direction = "高於" if diff > 0 else "低於"
             findings.append({
                 "嚴重度": severity,
@@ -136,7 +136,7 @@ def check_raw_water_vs_typical(app_data):
             # 閾值放寬: 100 倍以上才提示 (避免電鍍業誤判)
             if ratio > 100:
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "待確認",
                     "類型": "水質標準",
                     "單元": first_code,
                     "標準槽體": "原廢水",
@@ -151,7 +151,7 @@ def check_raw_water_vs_typical(app_data):
             # 低於 0.01 倍才提示 (太低可能是漏填/單位錯)
             elif ratio < 0.01:
                 findings.append({
-                    "嚴重度": "待人工",
+                    "嚴重度": "待確認",
                     "類型": "水質標準",
                     "單元": first_code,
                     "標準槽體": "原廢水",
@@ -298,7 +298,7 @@ def check_q_balance(app_data):
 
         # 拓樸偵測 (產生提示, 不豁免 finding)
         # 「自己有多出流」(本單元 effluent ≥ 2 條) 或 「上游有多出流」
-        # → 屬「水量分流結構」, 仍出 finding 但加流向提示, 嚴重度降「待人工」
+        # → 屬「水量分流結構」, 仍出 finding 但加流向提示, 嚴重度降「待確認」
         self_split = (count_out >= 2) or (len(effluent) >= 2)
         topology_hint = ""
         if self_split and upstream_split:
@@ -310,10 +310,10 @@ def check_q_balance(app_data):
 
         if diff_pct > 5:
             if self_split or upstream_split:
-                # 分流結構下, 從「不合理」降為「待人工」(需審查員確認是分流還是真異常)
-                severity = "待人工"
+                # 分流結構下, 從「不合理」降為「待確認」(需審查員確認是分流還是真異常)
+                severity = "待確認"
             else:
-                severity = "不合理" if diff_pct > 20 else "待人工"
+                severity = "不合理" if diff_pct > 20 else "待確認"
             direction = "多" if sum_in > sum_out else "少"
             findings.append({
                 "嚴重度": severity,
@@ -511,9 +511,9 @@ if __name__ == "__main__":
         findings = run_advanced_checks(app_data, business_type=bt)
         print(f"檢查項數: {len(findings)}")
         not_ok = [f for f in findings if f["嚴重度"] == "不合理"]
-        manual = [f for f in findings if f["嚴重度"] == "待人工"]
+        manual = [f for f in findings if f["嚴重度"] == "待確認"]
         print(f"  不合理: {len(not_ok)}")
-        print(f"  待人工: {len(manual)}")
+        print(f"  待確認: {len(manual)}")
         for f in not_ok[:5]:
             print(f"  [{f['類型']}] {f['單元']} - {f['對照項目']}: {f['描述'][:100]}")
         for f in manual[:5]:

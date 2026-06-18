@@ -113,7 +113,7 @@ def check_sludge_balance(unit, app_data):
             smin, smax, desc = rng
             if solids_pct < smin or solids_pct > smax:
                 direction = "過低" if solids_pct < smin else "過高"
-                severity = "不合理" if (solids_pct > smax * 3 or solids_pct < smin / 3) else "待人工"
+                severity = "不合理" if (solids_pct > smax * 3 or solids_pct < smin / 3) else "待確認"
                 findings.append({
                     "嚴重度": severity,
                     "類型": "質量平衡",

@@ -95,7 +95,7 @@ HEADER_FILL = PatternFill("solid", fgColor="2F5496")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 SEVERITY_FILL = {
     "不合理": PatternFill("solid", fgColor="FCE4D6"),
-    "待人工": PatternFill("solid", fgColor="FFF2CC"),
+    "待確認": PatternFill("solid", fgColor="FFF2CC"),
     "合理": PatternFill("solid", fgColor="E2EFDA"),
 }
 WRAP = Alignment(wrap_text=True, vertical="top")

@@ -108,7 +108,7 @@ def get_default_options(target: str) -> dict:
 # ─────────────────────────────────────────
 
 def summarize_findings(findings: list[dict]) -> dict[str, int]:
-    summary = {"不合理": 0, "待人工": 0, "提醒": 0, "錯誤": 0, "其他": 0}
+    summary = {"不合理": 0, "待確認": 0, "提醒": 0, "錯誤": 0, "其他": 0}
     for f in findings or []:
         sev = f.get("嚴重度", "")
         if sev in summary:
@@ -121,10 +121,10 @@ def summarize_findings(findings: list[dict]) -> dict[str, int]:
 def filter_findings(findings: list[dict], opts: dict) -> list[dict]:
     """依 options 過濾要含的 findings。
 
-    一律含: 不合理 + 待人工
+    一律含: 不合理 + 待確認
     選用: 提醒 (include_reminder), 系統錯誤 (include_system_error)
     """
-    keep_sev = {"不合理", "待人工", "提醒"}  # 「提醒」永遠含 (筆誤/錯別字)
+    keep_sev = {"不合理", "待確認", "提醒"}  # 「提醒」永遠含 (筆誤/錯別字)
     if opts.get("include_reminder"):
         keep_sev.add("其他")  # 額外 catch-all
     if opts.get("include_system_error"):
@@ -279,7 +279,7 @@ def build_internal_excel(app_data: dict, findings: list[dict] | None = None,
         ["", ""],
         ["━━━ 審查結果統計 ━━━", ""],
         ["🔴 不合理", summary["不合理"]],
-        ["🟡 待人工", summary["待人工"]],
+        ["🟡 待確認", summary["待確認"]],
         ["💡 提醒/筆誤", summary["提醒"]],
         ["💡 提醒 / 其他", summary["提醒"] + summary["其他"]],
         ["⚠️ 系統錯誤", summary["錯誤"]],
@@ -308,12 +308,12 @@ def build_internal_excel(app_data: dict, findings: list[dict] | None = None,
         r += 1
     _autosize(ws)
 
-    # 3. 待人工
-    ws = wb.create_sheet("3.待人工🟡")
+    # 3. 待確認
+    ws = wb.create_sheet("3.待確認🟡")
     _head(ws, ["嚴重度", "類型", "單元", "標準槽體", "對照項目", "描述", "依據"])
     r = 2
     for f in findings:
-        if f.get("嚴重度") != "待人工":
+        if f.get("嚴重度") != "待確認":
             continue
         for i, k in enumerate(["嚴重度", "類型", "單元", "標準槽體", "對照項目", "描述", "依據"], 1):
             cell = ws.cell(r, i, f.get(k, ""))
@@ -323,7 +323,7 @@ def build_internal_excel(app_data: dict, findings: list[dict] | None = None,
     _autosize(ws)
 
     # 提醒 / 系統錯誤 (選用)
-    other = [f for f in findings if f.get("嚴重度") not in ("不合理", "待人工")]
+    other = [f for f in findings if f.get("嚴重度") not in ("不合理", "待確認")]
     if other:
         ws = wb.create_sheet("3b.其他")
         _head(ws, ["嚴重度", "類型", "單元", "標準槽體", "對照項目", "描述", "依據"])
@@ -571,7 +571,7 @@ def build_vendor_word(app_data: dict, findings: list[dict] | None = None,
         doc.add_paragraph("廠商回覆: " + "_" * 60)
 
     # 二、待澄清項目
-    yel = [f for f in findings if f.get("嚴重度") == "待人工"]
+    yel = [f for f in findings if f.get("嚴重度") == "待確認"]
     doc.add_heading(f"二、待澄清項目 ({len(yel)} 項)", level=1)
     if not yel:
         doc.add_paragraph("(本案無此類項目)")
@@ -674,7 +674,7 @@ def build_integrated_json(app_data: dict, findings: list[dict] | None = None,
         "匯出時間": datetime.now().isoformat(),
         "統計": {
             "不合理": summary["不合理"],
-            "待人工": summary["待人工"],
+            "待確認": summary["待確認"],
             "提醒": summary["提醒"],
             "錯誤": summary["錯誤"],
             "處理單元數": len(app_data.get("units") or {}),

@@ -384,7 +384,7 @@ def check_design_metrics(unit):
     sor = metrics["sor_m3_m2_d"]
     g = metrics["g_value_s_inv"]
     is_lamella = metrics["is_lamella"]
-    sev = rule.get("嚴重度") or "待人工"
+    sev = rule.get("嚴重度") or "待確認"
 
     # ── HRT 檢查 ──
     hrt_min = rule.get("HRT_min")
@@ -517,7 +517,7 @@ def check_cross_unit_q_consistency(app_data):
             continue
         diff_pct = (q_max - q_min) / q_max * 100
         if diff_pct > 10:
-            severity = "不合理" if diff_pct > 30 else "待人工"
+            severity = "不合理" if diff_pct > 30 else "待確認"
             tags = ", ".join(f"{u}({side},Q={q:.2f})" for u, q, side in appears)
             findings.append({
                 "嚴重度": severity,
@@ -556,7 +556,7 @@ def check_quality_table_consistency(unit):
         items_count = qres.get("items_count", 0)
         if spread > 5 and items_count >= 3:
             # 嚴重度依差異程度
-            severity = "不合理" if spread > 20 else "待人工"
+            severity = "不合理" if spread > 20 else "待確認"
             findings.append({
                 "嚴重度": severity,
                 "類型": "文件一致性",
@@ -679,9 +679,9 @@ def main():
             print(f"     描述: {f['描述']}")
             print(f"     依據: {f['依據']}")
 
-    manual = [f for f in findings if f["嚴重度"] == "待人工"]
+    manual = [f for f in findings if f["嚴重度"] == "待確認"]
     if manual:
-        print(f"\n=== 待人工項 ({len(manual)}) ===")
+        print(f"\n=== 待確認項 ({len(manual)}) ===")
         for f in manual[:10]:
             print(f"  [{f['類型']}] {f['單元']} - {f['對照項目']}: {f['描述'][:80]}")
         if len(manual) > 10:

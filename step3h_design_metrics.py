@@ -283,7 +283,7 @@ def check_fast_slow_ratio(app_data, fast_code, slow_code):
         }
     elif ratio < 8 or ratio > 12:
         return {
-            "嚴重度": "待人工",
+            "嚴重度": "待確認",
             "類型": "設計參數",
             "單元": f"{fast_code} → {slow_code}",
             "標準槽體": "快混+慢混",

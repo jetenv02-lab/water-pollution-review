@@ -125,7 +125,7 @@ def save_snapshot(
         excel_bytes: internal Excel 的 bytes
         json_bytes: 整合 JSON 的 bytes
         base_name: 案件檔名前綴 (例: "邑昇")
-        findings_count: {"不合理": N, "待人工": M, "錯誤": K} 用於 metadata
+        findings_count: {"不合理": N, "待確認": M, "錯誤": K} 用於 metadata
         reviews_dir: 自訂目錄, 預設 review_runs/
 
     Returns:
@@ -371,5 +371,5 @@ if __name__ == "__main__":
         # 測試: 創一個假快照
         excel_data = b"FAKE EXCEL DATA"
         json_data = json.dumps({"test": "data"}).encode("utf-8")
-        result = save_snapshot(excel_data, json_data, "測試案", findings_count={"不合理": 5, "待人工": 3})
+        result = save_snapshot(excel_data, json_data, "測試案", findings_count={"不合理": 5, "待確認": 3})
         print(json.dumps(result, ensure_ascii=False, indent=2))
