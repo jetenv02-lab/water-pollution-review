@@ -387,8 +387,9 @@ def check_design_metrics(unit):
     sev = rule.get("嚴重度") or "待確認"
 
     # ── HRT 檢查 ──
-    # 雙軌比對: (a) 廠商申報 HRT (declared) vs (b) V÷Q×24 等效 HRT (24 hr/d 假設)
+    # 雙軌比對 + 進出 Q 差異提示:
     # 廠商常用「每天運轉 8 小時」算 HRT, 系統若用 24 hr/d 等效會多算 3 倍
+    # 進出 Q 差很多時 → HRT 數值不可信 (廠商可能水質表填寫錯位)
     hrt_min = rule.get("HRT_min")
     hrt_max = rule.get("HRT_max")
     if hrt is not None and (hrt_min or hrt_max):
@@ -396,11 +397,11 @@ def check_design_metrics(unit):
         hrt_max_v = hrt_max if hrt_max is not None else float("inf")
         if hrt < hrt_min_v or hrt > hrt_max_v:
             direction = "過短" if hrt < hrt_min_v else "過長"
+
             # 算等效 HRT (V÷Q×24) 對比
             equiv_hrt = _m.compute_hrt_v_over_q24(unit) if hasattr(_m, 'compute_hrt_v_over_q24') else None
             equiv_str = ""
             if equiv_hrt is not None and abs(equiv_hrt - hrt) / max(equiv_hrt, hrt) > 0.2:
-                # 兩者差 > 20% → 表示廠商可能用「N hr/d」算
                 ratio = equiv_hrt / hrt if hrt > 0 else 0
                 hours_per_day = round(24 / ratio) if ratio > 0 else 24
                 equiv_str = (
@@ -408,6 +409,25 @@ def check_design_metrics(unit):
                     f"系統用 V÷Q×24 算出 {equiv_hrt:.3f} hr ({equiv_hrt*60:.1f} 分鐘); "
                     f"差 {ratio:.1f} 倍, 廠商似乎用「每天運轉 {hours_per_day} 小時」算。"
                 )
+
+            # 進出 Q 差異提示 (若進出反推 Q 差 > 30% → 水質表可能填錯)
+            q_warn = ""
+            sq = unit.get("stream_q") or {}
+            in_qs = [info.get("q_cmd") for s, info in sq.items() if s.startswith("WTB") and isinstance(info, dict) and info.get("q_cmd")]
+            out_qs = [info.get("q_cmd") for s, info in sq.items() if s.startswith("WTA") and isinstance(info, dict) and info.get("q_cmd")]
+            if in_qs and out_qs:
+                in_q_total = sum(in_qs)
+                out_q_total = sum(out_qs)
+                if max(in_q_total, out_q_total) > 0:
+                    q_diff_pct = abs(in_q_total - out_q_total) / max(in_q_total, out_q_total)
+                    if q_diff_pct > 0.3:
+                        q_ratio = max(in_q_total, out_q_total) / min(in_q_total, out_q_total) if min(in_q_total, out_q_total) > 0 else float("inf")
+                        q_warn = (
+                            f" ⚠️ 注意: 進流 Q = {in_q_total:.2f} CMD vs 出流 Q = {out_q_total:.2f} CMD, "
+                            f"差 {q_ratio:.1f} 倍。HRT 數值可能不可信, "
+                            f"根因可能是水質表進出欄位填寫錯位 (請先看 Q 守恆 finding)。"
+                        )
+
             findings.append({
                 "嚴重度": sev,
                 "類型": "設計參數",
@@ -418,7 +438,7 @@ def check_design_metrics(unit):
                     f"HRT = {hrt:.3f} hr ({hrt*60:.1f} 分鐘), {direction}。"
                     f"學理範圍 {hrt_min_v} ~ {hrt_max_v} hr。"
                     f"(V={metrics['volume_m3']:.2f} m³, Q={metrics['main_q_cmd']:.1f} CMD)"
-                    f"{equiv_str}"
+                    f"{equiv_str}{q_warn}"
                 ),
                 "依據": "_槽體學理 HRT 範圍 + 環工設計準則",
             })
