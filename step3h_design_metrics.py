@@ -154,8 +154,55 @@ def detect_lamella(unit):
 # 主要計算函式
 # ─────────────────────────────────────────────
 
-def compute_hrt(unit):
-    """算 HRT (小時)。"""
+def get_declared_hrt_hr(unit):
+    """讀廠商在 PDF 上申報的 HRT (轉成小時)。
+
+    如果廠商寫「4.1 分」回 0.068, 寫「8 小時」回 8.0。
+    讀不到回 None。
+    """
+    dp = unit.get("design_params") or {}
+    hrt_entry = dp.get("水力停留時間") or dp.get("水力停留時間 (HRT)")
+    if not hrt_entry or not isinstance(hrt_entry, dict):
+        return None
+    raw = str(hrt_entry.get("raw") or "")
+    # 取 min 或 max
+    val = hrt_entry.get("min") or hrt_entry.get("max")
+    if val is None:
+        return None
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return None
+    # 判斷單位 (分/小時/日)
+    if "分" in raw or "min" in raw.lower():
+        return v / 60.0
+    if "日" in raw or "天" in raw or "d" in raw.lower() and "min" not in raw.lower():
+        return v * 24.0
+    # 預設小時
+    return v
+
+
+def compute_hrt(unit, mode="declared_first"):
+    """算 HRT (小時)。
+
+    Args:
+        mode:
+          - "declared_first": 優先用廠商申報的 HRT, 沒有才用 V÷Q×24
+          - "v_over_q_24": 強制用 V÷Q × 24 (24 hr/d 等效)
+    """
+    if mode == "declared_first":
+        declared = get_declared_hrt_hr(unit)
+        if declared is not None:
+            return declared
+    V = get_volume(unit)
+    Q = get_main_q(unit)
+    if V is None or Q is None or Q <= 0:
+        return None
+    return V / Q * 24.0
+
+
+def compute_hrt_v_over_q24(unit):
+    """算 V÷Q×24 等效 HRT (假設 24 小時運轉)。"""
     V = get_volume(unit)
     Q = get_main_q(unit)
     if V is None or Q is None or Q <= 0:
