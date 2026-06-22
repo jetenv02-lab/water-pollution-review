@@ -325,28 +325,36 @@ def check_unit(unit, rules=None):
         out_conc_x_q = 0.0
         in_has = False
         out_has = False
-        for stream in influent.values():
+        # Q 從 unit['stream_q'][stream_code]['q_cmd'] 拿 (step2 反推結果)
+        unit_stream_q = unit.get("stream_q") or {}
+        for stream_code, stream in influent.items():
             if not isinstance(stream, dict):
                 continue
             v = stream.get(item)
+            # 嘗試從 stream_q 拿 Q
+            sq_info = unit_stream_q.get(stream_code) or {}
+            q_from_sq = _to_float(sq_info.get("q_cmd")) if isinstance(sq_info, dict) else None
             if isinstance(v, dict):
                 m = _to_float(v.get("質量"))
                 c = _to_float(v.get("濃度"))
-                q = _to_float(v.get("Q") or v.get("q") or v.get("q_cmd"))
+                # Q 優先用 stream_q 反推, 退而用 stream 內 Q
+                q = q_from_sq or _to_float(v.get("Q") or v.get("q") or v.get("q_cmd"))
                 if m is not None:
                     in_mass += m
                     in_has = True
                 if c is not None and q is not None and q > 0:
                     in_conc_x_q += c * q
                     in_q_sum += q
-        for stream in effluent.values():
+        for stream_code, stream in effluent.items():
             if not isinstance(stream, dict):
                 continue
             v = stream.get(item)
+            sq_info = unit_stream_q.get(stream_code) or {}
+            q_from_sq = _to_float(sq_info.get("q_cmd")) if isinstance(sq_info, dict) else None
             if isinstance(v, dict):
                 m = _to_float(v.get("質量"))
                 c = _to_float(v.get("濃度"))
-                q = _to_float(v.get("Q") or v.get("q") or v.get("q_cmd"))
+                q = q_from_sq or _to_float(v.get("Q") or v.get("q") or v.get("q_cmd"))
                 if m is not None:
                     out_mass += m
                     out_has = True
@@ -385,6 +393,41 @@ def check_unit(unit, rules=None):
         direction = "減少" if out_mass < in_mass else "增加"
         # 若分流結構 + 濃度未變, 嚴重度降為「待確認」
         eff_sev = "待確認" if downgrade else severity
+
+        # 加「進出加權平均濃度」對比 (老大要求: 「鋅濃度」也要看)
+        conc_str = ""
+        if in_q_sum > 0 and out_q_sum > 0:
+            in_avg_c = in_conc_x_q / in_q_sum
+            out_avg_c = out_conc_x_q / out_q_sum
+            if in_avg_c > 0:
+                conc_diff_pct = (out_avg_c - in_avg_c) / in_avg_c * 100
+                conc_str = (
+                    f" 加權平均濃度 進 {in_avg_c:.2f} → 出 {out_avg_c:.2f} mg/L "
+                    f"({'+' if conc_diff_pct >= 0 else ''}{conc_diff_pct:.1f}%)。"
+                )
+
+        # 重金屬學理 hint (僅對 鋅/銅/鎳/鎘/鉛/鉻 出現異常時加)
+        metal_hint = ""
+        metal_keywords = ['鋅', '銅', '鎳', '鎘', '鉛', '六價鉻', '總鉻', '鉻']
+        if any(m in item for m in metal_keywords):
+            if direction == "增加":
+                metal_hint = (
+                    " 💡 重金屬增加可能原因: "
+                    "(1) 廠商水質表填寫錯位 (進/出欄反了);"
+                    "(2) 漏列某個進流支線 (例如迴流/反洗液);"
+                    "(3) pH 控制不當 → 鋅是兩性氫氧化物, "
+                    "pH > 11 會把已沉澱的鋅反溶回來。"
+                    "建議先核對 PDF 水質表進/出欄位, 再看槽體 pH 設計。"
+                )
+            else:  # 減少
+                metal_hint = (
+                    " 💡 重金屬減少可能原因: "
+                    "(1) 水量分流稀釋 (看出加總 vs 進加總);"
+                    "(2) 螯合/吸附 (若有特殊機制);"
+                    "(3) 非沉澱單元若展現去除效能, 違反學理 "
+                    "(快混/pH 池本身無固液分離)。"
+                )
+
         findings.append({
             "嚴重度": eff_sev,
             "類型": "質量平衡",
@@ -393,7 +436,8 @@ def check_unit(unit, rules=None):
             "對照項目": item,
             "描述": (
                 f"{item} 質量 進 {in_mass:.3f} → 出 {out_mass:.3f} kg/d "
-                f"({direction} {diff_pct:.1f}%, 容忍 {tol}%)。{desc_text}{topology_hint}"
+                f"({direction} {diff_pct:.1f}%, 容忍 {tol}%)。"
+                f"{conc_str}{desc_text}{topology_hint}{metal_hint}"
             ),
             "依據": f"_槽體學理 規則: {std_tank} ({rule['加藥類型']})",
         })
