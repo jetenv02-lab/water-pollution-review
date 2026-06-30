@@ -365,7 +365,18 @@ def check_unit(unit, rules=None):
         if not (in_has and out_has and in_mass > 0):
             continue
 
-        diff_pct = abs(out_mass - in_mass) / in_mass * 100
+        # ───── 加藥質量補償 (Faye + Nick, 2026-06-30) ─────
+        try:
+            import dosing_rules_loader as _drl
+            _chemical_added = _drl.compute_chemical_mass(
+                unit, item, in_q_sum if in_q_sum > 0 else None
+            )
+        except Exception:
+            _chemical_added = 0.0
+        _in_mass_with_chem = in_mass + _chemical_added
+        # ───── 補償結束 ─────
+
+        diff_pct = abs(out_mass - _in_mass_with_chem) / _in_mass_with_chem * 100
         # 絕對最小容忍 0.5% (避免 PDF 抽取的舍入誤差被當成違規)
         effective_tol = max(tol, 0.5)
         if diff_pct <= effective_tol:
@@ -390,7 +401,7 @@ def check_unit(unit, rules=None):
                     )
                     downgrade = True
 
-        direction = "減少" if out_mass < in_mass else "增加"
+        direction = "減少" if out_mass < _in_mass_with_chem else "增加"
         # 若分流結構 + 濃度未變, 嚴重度降為「待確認」
         eff_sev = "待確認" if downgrade else severity
 
@@ -435,7 +446,9 @@ def check_unit(unit, rules=None):
             "標準槽體": std_tank,
             "對照項目": item,
             "描述": (
-                f"{item} 質量 進 {in_mass:.3f} → 出 {out_mass:.3f} kg/d "
+                f"{item} 質量 進 {in_mass:.3f}"
+                f"{' + 加藥估算 ' + format(_chemical_added, '.3f') if _chemical_added > 0 else ''}"
+                f" → 出 {out_mass:.3f} kg/d "
                 f"({direction} {diff_pct:.1f}%, 容忍 {tol}%)。"
                 f"{conc_str}{desc_text}{topology_hint}{metal_hint}"
             ),
