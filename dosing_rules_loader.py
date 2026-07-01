@@ -152,6 +152,7 @@ DRUG_NAME_ALIAS = {
     "H2SO4": ["H2SO4", "硫酸", "H₂SO₄"],
     "HCl": ["HCl", "鹽酸", "氫氯酸"],
     "Ca(OH)2": ["Ca(OH)2", "氫氧化鈣", "石灰", "石灰乳", "熟石灰"],
+    "CaCl2": ["CaCl2", "氯化鈣", "CaCl₂"],
     "PAC": ["PAC", "多氯化鋁", "聚合氯化鋁", "AL13"],
     "PAM": ["PAM", "Polymer", "polymer", "高分子", "聚丙烯醯胺",
             "助凝劑", "陽離子高分子", "陰離子高分子"],
@@ -164,26 +165,68 @@ DRUG_NAME_ALIAS = {
     "Na2S": ["Na2S", "硫化鈉", "Na₂S"],
     "尿素": ["尿素", "urea", "CO(NH2)2"],
     "磷酸": ["磷酸", "H3PO4", "H₃PO₄"],
+    "活性碳": ["活性碳", "activated carbon", "粉末活性碳"],  # 移除 "AC" 避免跟 PAC 混淆
+}
+
+# 藥劑「片段對照」— 用於 step2 排版壞的 case
+# 例 "氫氧化依加藥桶液位鈉" 應該是「氫氧化鈉」被插入了「依加藥桶液位」
+# 判斷: 兩個片段都在 text 中 (順序無所謂)
+DRUG_FRAGMENT_ALIAS = {
+    "NaOH": [("氫氧化", "鈉")],
+    "H2SO4": [("硫", "酸")],
+    "Ca(OH)2": [("氫氧化", "鈣")],
+    "CaCl2": [("氯化", "鈣")],
+    "FeSO4": [("硫酸", "亞鐵"), ("硫酸", "鐵")],
+    "FeCl3": [("氯化", "鐵"), ("三氯化", "鐵")],
+    "NaClO": [("次氯酸", "鈉")],
+    "NaHSO3": [("亞硫酸", "鈉"), ("亞硫", "鈉")],
+    "Na2S": [("硫化", "鈉")],
 }
 
 
 def _match_drug_name(text, drug_key):
-    """比對 measure_params 的參數名是否包含指定藥劑."""
+    """比對 measure_params 的參數名是否包含指定藥劑.
+    支援兩種比對:
+    1. 完整字串比對 (DRUG_NAME_ALIAS)
+    2. 片段對照 (DRUG_FRAGMENT_ALIAS) — 兩片段都在 text 中 (order-free), 支援排版壞的 case
+    """
     if not text:
         return False
     text_str = str(text)
+    # (1) 完整字串比對
     aliases = DRUG_NAME_ALIAS.get(drug_key, [drug_key])
     for alias in aliases:
         if alias in text_str:
+            return True
+    # (2) 片段對照
+    for fragments in DRUG_FRAGMENT_ALIAS.get(drug_key, []):
+        if all(frag in text_str for frag in fragments):
             return True
     return False
 
 
 def _parse_concentration_pct(param_name):
-    """從參數名解析商品濃度 (%). 例: '加藥量(NaOH（45％）)' → 45.0. 找不到回 None."""
+    """從參數名解析商品濃度 (%).
+    支援多種變形:
+    - 標準: '加藥量(NaOH（45％）)' → 45.0
+    - step2 排版壞的: '加藥量(氫氧化依加藥桶液位鈉45％)' → 45.0
+    - 純數字後接%: '硫酸 10%' → 10.0
+    找不到回 None."""
     if not param_name:
         return None
-    m = re.search(r"[（(](\d+(?:\.\d+)?)\s*[％%][)）]", str(param_name))
+    text = str(param_name)
+    # 找任何位置的 "數字 %" 或 "數字 ％" (兩種百分符號)
+    # step2 可能把濃度插入雜訊: "硫酸10依加藥桶液位％" 這種數字跟%被拆開
+    # 用兩階段:
+    # 1) 連續 數字+% (標準)
+    # 2) 數字後 <= 12 字元有 %  (排版壞)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[％%]", text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    m = re.search(r"(\d+(?:\.\d+)?)[\u4e00-\u9fff]{1,12}[％%]", text)
     if m:
         try:
             return float(m.group(1))
