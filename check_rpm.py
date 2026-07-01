@@ -238,6 +238,9 @@ def check_all_units_rpm(units, rpm_ranges=None):
     else:
         unit_iter = units
 
+    fast_mix_units = []   # (code, doc_max)
+    slow_mix_units = []   # (code, doc_max)
+
     for unit in unit_iter:
         if not isinstance(unit, dict):
             continue
@@ -245,6 +248,43 @@ def check_all_units_rpm(units, rpm_ranges=None):
         unit_copy = dict(unit)
         unit_copy.setdefault("code_id", unit.get("raw_code"))
         findings.extend(check_unit_rpm(unit_copy, rpm_ranges))
+
+        # 收集快混/慢混 RPM 準備做比值檢查
+        std = unit.get("std_tank") or ""
+        rpm = _find_rpm_in_params(unit.get("design_params") or {}) or \
+              _find_rpm_in_params(unit.get("measure_params") or {})
+        if rpm:
+            doc_min, doc_max, _ = rpm
+            rpm_val = doc_max or doc_min
+            code = unit.get("raw_code") or unit.get("code_id") or "?"
+            if "快混" in std:
+                fast_mix_units.append((code, rpm_val))
+            elif "慢混" in std:
+                slow_mix_units.append((code, rpm_val))
+
+    # 快混/慢混 比值檢查: 快混應比慢混快 3~10 倍
+    # 若同一廠內 快混 RPM ≤ 慢混 RPM 或 差 < 2 倍 → 提醒
+    if fast_mix_units and slow_mix_units:
+        for f_code, f_rpm in fast_mix_units:
+            for s_code, s_rpm in slow_mix_units:
+                if not f_rpm or not s_rpm:
+                    continue
+                if f_rpm <= s_rpm * 2:
+                    findings.append({
+                        "嚴重度": "待確認",
+                        "類型": "設計參數",
+                        "單元": f"{f_code} vs {s_code}",
+                        "標準槽體": "快混/慢混",
+                        "對照項目": "快混/慢混 RPM 比值",
+                        "描述": (
+                            f"{f_code} 快混 {f_rpm:.0f} RPM 與 "
+                            f"{s_code} 慢混 {s_rpm:.0f} RPM 差距 < 2 倍 "
+                            f"(學理: 快混應比慢混快 3~10 倍, 快混劇烈打散凝集劑, "
+                            f"慢混低速讓絮體長大而不打散)。"
+                            f"請確認轉速設定是否符合槽體功能。"
+                        ),
+                        "依據": "混凝原理: G 值 (速度梯度) 快混需 500~1000 s⁻¹, 慢混 30~80 s⁻¹",
+                    })
 
     return findings
 
