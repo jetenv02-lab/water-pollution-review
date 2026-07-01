@@ -946,6 +946,9 @@ with tab1:
                     if _code and _code in _units_with_kept:
                         _desc = _f.get("描述", "")
                         _brief = _desc.split("。")[0][:80] if _desc else "進出水質高度雷同"
+                        # 拿掉 _brief 開頭可能已存在的 "該單元" 避免 "該單元該單元" 重複
+                        if _brief.startswith("該單元"):
+                            _brief = _brief[3:]
                         _identical_annotations[_code] = f" [附註: 該單元{_brief}]"
                     else:
                         _identical_standalone.append(_f)

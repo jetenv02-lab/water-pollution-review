@@ -371,14 +371,22 @@ def check_unit(unit, rules=None):
             _chemical_added = _drl.compute_chemical_mass(
                 unit, item, in_q_sum if in_q_sum > 0 else None
             )
+            _chem_desc = _drl.describe_chemical_contribution(
+                unit, item, in_q_sum if in_q_sum > 0 else None
+            )
         except Exception:
             _chemical_added = 0.0
+            _chem_desc = ""
         _in_mass_with_chem = in_mass + _chemical_added
         # ───── 補償結束 ─────
 
         diff_pct = abs(out_mass - _in_mass_with_chem) / _in_mass_with_chem * 100
         # 絕對最小容忍 0.5% (避免 PDF 抽取的舍入誤差被當成違規)
-        effective_tol = max(tol, 0.5)
+        # Q2: 有加藥時容忍度放寬到 30% (加藥量是經驗參考, 無明文規定)
+        if _chemical_added > 0:
+            effective_tol = max(tol, 30.0)
+        else:
+            effective_tol = max(tol, 0.5)
         if diff_pct <= effective_tol:
             continue  # 在容忍度內
 
@@ -439,6 +447,18 @@ def check_unit(unit, rules=None):
                     "(快混/pH 池本身無固液分離)。"
                 )
 
+        # Bug 2: 根據實際加藥修飾學理說明
+        # 若廠商在該槽實際加了非 pH 藥劑 (PAC/PAM/活性碳/CaCl2 等),
+        # 原本規則庫寫的「純 pH 調整槽只加酸/鹼」就不符合現況, 改用實際加藥列表
+        eff_desc = desc_text
+        if _chem_desc and ("純" in desc_text or "只加酸" in desc_text or "只加鹼" in desc_text):
+            eff_desc = (
+                f"該槽實際加藥: {_chem_desc}; "
+                f"規則庫學理: {desc_text} — 實際加藥與規則庫定位不符, 請確認槽體功能。"
+            )
+        elif _chem_desc:
+            eff_desc = f"{desc_text} (實際加藥: {_chem_desc})"
+
         findings.append({
             "嚴重度": eff_sev,
             "類型": "質量平衡",
@@ -449,8 +469,8 @@ def check_unit(unit, rules=None):
                 f"{item} 質量 進 {in_mass:.3f}"
                 f"{' + 加藥估算 ' + format(_chemical_added, '.3f') if _chemical_added > 0 else ''}"
                 f" → 出 {out_mass:.3f} kg/d "
-                f"({direction} {diff_pct:.1f}%, 容忍 {tol}%)。"
-                f"{conc_str}{desc_text}{topology_hint}{metal_hint}"
+                f"({direction} {diff_pct:.1f}%, 容忍 {effective_tol:.1f}%)。"
+                f"{conc_str}{eff_desc}{topology_hint}{metal_hint}"
             ),
             "依據": f"_槽體學理 規則: {std_tank} ({rule['加藥類型']})",
         })
