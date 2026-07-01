@@ -895,10 +895,70 @@ with tab1:
                 except Exception as _e_id:
                     print(f"[check_identical 失敗] {_e_id}")
 
-                # 合併全部層 (規則庫驅動 → RPM → 放流 → 進=出 放最後)
-                st.session_state["_check_findings"] = (
+                # B+C (2026-07-01): 跨層 dedup
+                # B: 若同單元同時有具體 finding + 通用 finding → 移除通用
+                #    通用特徵: 描述含 "需檢驗/需人工/應保持不變" 等模糊語彙, 且沒具體數字
+                # C: 若同單元有其他 finding + 進=出偷懶 → 進=出併入描述末尾
+                _all_findings = (
                     findings_basic + findings_adv + findings_rule
-                    + findings_rpm + findings_discharge + findings_identical
+                    + findings_rpm + findings_discharge
+                )
+
+                _GENERIC_PHRASES = ["需檢驗", "需人工檢視", "多半需人工", "需檢核",
+                                    "水質濃度及質量", "各項水質濃度",
+                                    "應保持不變", "應予檢核"]
+
+                def _is_generic_finding(_f):
+                    import re as _re
+                    _d = str(_f.get("描述") or "")
+                    _t = str(_f.get("對照項目") or "")
+                    # 有具體數字 → 非通用
+                    if _re.search(r"進\s*-?\d|\d+\s*→\s*\d|\d+\.\d+\s*%|\d+%|去除\s*-?\d", _d):
+                        return False
+                    for _p in _GENERIC_PHRASES:
+                        if _p in _d or _p in _t:
+                            return True
+                    return False
+
+                # 找出「有具體 finding」的單元
+                _units_specific = set()
+                for _f in _all_findings:
+                    if not _is_generic_finding(_f):
+                        _u = _f.get("單元")
+                        if _u:
+                            _units_specific.add(_u)
+
+                # B: 移除同單元的通用 finding (但保留該單元「僅有」通用 finding 的情況)
+                _kept_findings = []
+                for _f in _all_findings:
+                    if _is_generic_finding(_f) and _f.get("單元") in _units_specific:
+                        continue
+                    _kept_findings.append(_f)
+
+                # C: 進=出偷懶 — 同單元有其他 finding 就併入描述, 沒有就獨立列
+                _identical_standalone = []
+                _identical_annotations = {}
+                _units_with_kept = set(
+                    _f.get("單元") for _f in _kept_findings if _f.get("單元")
+                )
+                for _f in findings_identical:
+                    _code = _f.get("單元")
+                    if _code and _code in _units_with_kept:
+                        _desc = _f.get("描述", "")
+                        _brief = _desc.split("。")[0][:80] if _desc else "進出水質高度雷同"
+                        _identical_annotations[_code] = f" [附註: 該單元{_brief}]"
+                    else:
+                        _identical_standalone.append(_f)
+
+                # 加註 (每單元只加 1 次)
+                for _f in _kept_findings:
+                    _code = _f.get("單元")
+                    if _code in _identical_annotations:
+                        _f["描述"] = (_f.get("描述") or "") + _identical_annotations[_code]
+                        del _identical_annotations[_code]
+
+                st.session_state["_check_findings"] = (
+                    _kept_findings + _identical_standalone
                 )
 
                 # ─── Step 4: 水量平衡示意圖解析 (AI 視覺辨識, 可選) ───

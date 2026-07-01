@@ -290,12 +290,38 @@ def get_declared_dosing_kg_per_day(unit, drug_key):
     return (None, None)
 
 
+def _has_any_declared_dosing(unit):
+    """判斷該單元是否有廠商申報「任何加藥量」.
+    掃 measure_params 找有 "加藥" 字眼的欄位, 且值有數字.
+    """
+    if not isinstance(unit, dict):
+        return False
+    measure = unit.get("measure_params") or {}
+    for pname, pval in measure.items():
+        if "加藥" not in str(pname):
+            continue
+        if not isinstance(pval, dict):
+            continue
+        try:
+            vmin = float(pval.get("min")) if pval.get("min") is not None else None
+            vmax = float(pval.get("max")) if pval.get("max") is not None else None
+        except (TypeError, ValueError):
+            continue
+        if (vmin is not None and vmin > 0) or (vmax is not None and vmax > 0):
+            return True
+    return False
+
+
 def compute_chemical_mass(unit, item, q_cmd=None):
     """計算該單元因加藥引入指定水質項目的質量 (kg/d).
 
     優先級:
-    (1) 廠商 measure_params 申報的實際 kg/day  ← 精準
-    (2) 規則庫 _加藥規則 典型劑量 mg/L × 進流 Q  ← 通用 fallback
+    (1) 若廠商申報**任何**加藥 → 只用廠商申報 (不 fallback 典型值)
+        避免「幫廠商想像沒申報的藥」
+    (2) 若廠商完全沒申報 → 用規則庫典型值 mg/L × Q 全套估算
+
+    2026-07-01 v3 (Nick 反映): 舊版對每個藥獨立判斷,
+    導致廠商只申報 A 藥時, 系統會幫 B/C 藥用典型值補. 這是不對的.
 
     Args:
         unit: 處理單元 dict (有 std_tank + measure_params)
@@ -324,6 +350,9 @@ def compute_chemical_mass(unit, item, q_cmd=None):
                 if isinstance(q, (int, float)):
                     q_cmd += float(q)
 
+    # v3: 判斷該槽有沒有廠商申報「任何」加藥
+    has_declared = _has_any_declared_dosing(unit)
+
     total = 0.0
     for entry in entries:
         # 找該藥劑對該水質項目的轉換係數
@@ -335,17 +364,18 @@ def compute_chemical_mass(unit, item, q_cmd=None):
         if item_coef <= 0:
             continue
 
-        # 優先讀廠商申報
+        # 讀廠商申報
         declared_kg, _pct = get_declared_dosing_kg_per_day(unit, entry["drug"])
         if declared_kg is not None and declared_kg > 0:
             # 廠商申報值 (kg/d 純物質) × 轉換係數 = kg/d 引入項目
             total += declared_kg * item_coef
-        else:
-            # fallback 規則庫典型值
+        elif not has_declared:
+            # v3: 只有在該槽「完全沒任何申報」時, 才 fallback 典型值
             if not q_cmd or q_cmd <= 0:
                 continue
             # mg/L × m³/d / 1000 × 轉換係數 = kg/d
             total += entry["mg_per_L"] * q_cmd / 1000.0 * item_coef
+        # else: 廠商有申報 A 但沒申報 B, 別幫 B 補典型值 → 跳過
     return total
 
 
@@ -374,6 +404,9 @@ def describe_chemical_contribution(unit, item, q_cmd=None):
                 if isinstance(q, (int, float)):
                     q_cmd += float(q)
 
+    # v3: 若該槽有廠商申報, 就只用申報值 (別提典型值)
+    has_declared = _has_any_declared_dosing(unit)
+
     parts = []
     total = 0.0
     for entry in entries:
@@ -389,7 +422,8 @@ def describe_chemical_contribution(unit, item, q_cmd=None):
                     f"(@{pct:.0f}%)×{coef}={added:.1f}"
                 )
                 total += added
-            elif q_cmd and q_cmd > 0:
+            elif not has_declared and q_cmd and q_cmd > 0:
+                # 只有完全沒申報時才用典型值
                 added = entry["mg_per_L"] * q_cmd / 1000.0 * coef
                 parts.append(
                     f"{entry['drug']} 典型 {entry['mg_per_L']}mg/L×{coef}={added:.1f}"

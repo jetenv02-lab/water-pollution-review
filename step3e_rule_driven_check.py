@@ -624,11 +624,64 @@ def run_rule_driven_check(app_data, max_findings_per_unit=20):
                 # 不讓單一規則失敗影響整體
                 pass
 
+        # B (2026-07-01): 若該單元有「具體」finding, 移除同單元的「通用」finding
+        # 通用 finding 特徵: 描述含 "需檢驗" / "需人工檢視" / "多半需人工" 等模糊語彙
+        # 或 對照項目 = "水質濃度及質量" 這種抽象名稱
+        # 具體 finding 特徵: 描述含具體數字 (進XX→出XX / XX%)
+        unit_findings = _dedup_generic_when_specific_exists(unit_findings)
+
         # 限制每單元 finding 數量
         unit_findings = unit_findings[:max_findings_per_unit]
         findings.extend(unit_findings)
 
     return findings
+
+
+# ──────────────────────────────────────────────────
+# 通用 finding vs 具體 finding 分類
+# ──────────────────────────────────────────────────
+_GENERIC_PHRASES = [
+    "需檢驗", "需人工檢視", "多半需人工", "需檢核",
+    "水質濃度及質量", "各項水質濃度",
+    "應保持不變", "應予檢核",
+]
+
+
+def _is_generic_finding(f):
+    """判斷是否為通用/技師本來就懂的 finding.
+    特徵:
+    - 描述含模糊語彙 (需檢驗/需人工/應予檢核)
+    - 對照項目為抽象名稱 (水質濃度及質量)
+    - 且描述**沒有**具體數字 (進XX→出XX / XX%)
+    """
+    if not isinstance(f, dict):
+        return False
+    desc = str(f.get("描述") or "")
+    target = str(f.get("對照項目") or "")
+
+    # 有具體數字 → 不是通用
+    import re as _re
+    if _re.search(r"進\s*-?\d|\d+\s*→\s*\d|\d+\.\d+\s*%|\d+%|去除\s*-?\d", desc):
+        return False
+
+    # 匹配模糊語彙
+    for phrase in _GENERIC_PHRASES:
+        if phrase in desc or phrase in target:
+            return True
+    return False
+
+
+def _dedup_generic_when_specific_exists(unit_findings):
+    """若該單元有具體 finding, 移除通用 finding.
+    但若通用 finding 是**唯一**的 finding, 保留 (無其他資訊時仍要提示).
+    """
+    if not unit_findings:
+        return unit_findings
+    specific = [f for f in unit_findings if not _is_generic_finding(f)]
+    generic = [f for f in unit_findings if _is_generic_finding(f)]
+    if specific:
+        return specific  # 有具體 → 只保留具體
+    return generic  # 沒具體 → 保留通用 (別漏抓)
 
 
 if __name__ == "__main__":
