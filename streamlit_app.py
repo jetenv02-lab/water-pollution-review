@@ -854,8 +854,42 @@ with tab1:
                 findings_adv = run_advanced_checks(app_data_local, business_type=bt)
                 _render_overlay(p3_end, f"{_S(3)} · 規則庫驅動檢查 (規則庫 299 筆環工技師缺失)", _eta(p3_end))
                 findings_rule = run_rule_driven_check(app_data_local)
-                # 合併三層, 規則庫驅動的放最後 (一般是「待確認」性質)
-                st.session_state["_check_findings"] = findings_basic + findings_adv + findings_rule
+
+                # ─── 新增: RPM 攪拌轉速檢查 + 放流水標準檢查 (2026-06-30, be0ddc1) ───
+                findings_rpm = []
+                findings_discharge = []
+                try:
+                    from check_rpm import check_all_units_rpm
+                    findings_rpm = check_all_units_rpm(app_data_local.get("units") or {})
+                except Exception as _e_rpm:
+                    print(f"[check_rpm 失敗] {_e_rpm}")
+
+                try:
+                    from discharge_standard_loader import check_all_discharge_units
+                    from extract_production_scale import extract_section_5
+                    _industry = ""
+                    try:
+                        _scale = extract_section_5(tmp_path)
+                        _industry_raw = _scale.get("業別") or ""
+                        for _kw in ["電鍍", "PCB", "印刷電路板", "化工", "化學",
+                                    "食品", "紙板", "造紙", "金屬基本", "金屬表面"]:
+                            if _kw in _industry_raw:
+                                _industry = _kw
+                                break
+                    except Exception:
+                        pass
+                    if _industry:
+                        findings_discharge = check_all_discharge_units(
+                            app_data_local.get("units") or {}, _industry
+                        )
+                except Exception as _e_dis:
+                    print(f"[check_discharge 失敗] {_e_dis}")
+
+                # 合併全部層 (規則庫驅動 → RPM → 放流放最後)
+                st.session_state["_check_findings"] = (
+                    findings_basic + findings_adv + findings_rule
+                    + findings_rpm + findings_discharge
+                )
 
                 # ─── Step 4: 水量平衡示意圖解析 (AI 視覺辨識, 可選) ───
                 if also_flow:
