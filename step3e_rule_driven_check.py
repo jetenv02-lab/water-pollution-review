@@ -423,9 +423,23 @@ def check_rule_against_unit(rule, unit):
             expected_lo, expected_hi = _get_removal_range(std_tank, metal)
 
             if is_separation_tank:
+                # 該降卻升: 學理登記為「該降」但實測反而上升 (削減率為負值)
+                # → 廠商可能填錯、pH>11 兩性反溶、或漏列進流支線
+                if expected_lo is not None and c_out > c_in and removal <= -10:
+                    return _make_finding(
+                        "待確認", "去除率", code, std_tank, target_item,
+                        f"{metal} 進{c_in:.2f}→出{c_out:.2f} (削減率 {removal:.1f}%, "
+                        f"反而上升). 依學理 {std_tank} {metal} 應為去除 "
+                        f"{expected_lo:.0f}~{expected_hi:.0f}%, 實測反而增加, 可能原因: "
+                        f"(1) 廠商水質表填錯 (進出欄反了); "
+                        f"(2) 漏列進流支線 (回流/反洗液); "
+                        f"(3) pH 控制不當 (Zn/Al 兩性氫氧化物於 pH>11 反溶). "
+                        f"規則: {rule_text[:60]}",
+                        deficiency_id, source
+                    )
                 # 類 2: 對照學理範圍
                 if expected_lo is not None and expected_hi is not None:
-                    if removal < expected_lo:
+                    if 0 <= removal < expected_lo:
                         return _make_finding(
                             "待確認", "去除率", code, std_tank, target_item,
                             f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
@@ -489,7 +503,22 @@ def check_rule_against_unit(rule, unit):
             expected_lo, expected_hi = _get_removal_range(std_tank, std_item)
 
             if is_separation_tank and expected_lo is not None:
-                if c_out < c_in:  # 只對下降時對比學理
+                # 該降卻升: 學理登記為「該降」但實測反而上升
+                if c_out > c_in:
+                    inc_pct = (c_out - c_in) / c_in * 100
+                    if inc_pct >= 10:
+                        return _make_finding(
+                            "待確認", "去除率", code, std_tank, target_item,
+                            f"{water_item} 進{c_in:.2f}→出{c_out:.2f} (反而上升 {inc_pct:.1f}%). "
+                            f"依學理 {std_tank} {water_item} 應為去除 {expected_lo:.0f}~{expected_hi:.0f}%, "
+                            f"實測反而增加, 可能原因: "
+                            f"(1) 廠商水質表填錯 (進出欄反了); "
+                            f"(2) 該槽有加藥引入 (例如快混加 PAC 使 SS↑, 但沉澱池不應如此); "
+                            f"(3) 有其他高濃度支線未列入. "
+                            f"規則: {rule_text[:60]}",
+                            deficiency_id, source
+                        )
+                else:
                     removal = (c_in - c_out) / c_in * 100
                     if removal < expected_lo:
                         return _make_finding(
@@ -574,13 +603,19 @@ def run_rule_driven_check(app_data, max_findings_per_unit=20):
         # 不額外加文件類/現場設備類, 避免重複過多
 
         unit_findings = []
-        seen_keys = set()  # 避免同一單元同一對照項目重複
+        seen_keys = set()  # 避免同一單元同一「檢查情境」重複
         for rule in applicable_rules:
             try:
                 f = check_rule_against_unit(rule, unit)
                 if f is None:
                     continue
-                key = (f["對照項目"], f["描述"][:50])
+                # dedup key = (類型, 描述前 40 字)
+                # 不同規則但檢查同 metric (例: 沉澱池銅 49.8%) 時描述前綴會相同.
+                # 對照項目不放進 key, 因為多條規則的對照項目字面不同
+                # ("金屬去除率" / "去除率估算合理性" / "去除率與表面溢流率")
+                # 但實際檢查的都是同一件事.
+                desc_head = (f.get("描述") or "")[:40]
+                key = (f.get("類型"), desc_head)
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
