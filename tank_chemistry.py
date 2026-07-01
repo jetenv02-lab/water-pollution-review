@@ -447,17 +447,14 @@ def check_unit(unit, rules=None):
                     "(快混/pH 池本身無固液分離)。"
                 )
 
-        # Bug 2: 根據實際加藥修飾學理說明
-        # 若廠商在該槽實際加了非 pH 藥劑 (PAC/PAM/活性碳/CaCl2 等),
-        # 原本規則庫寫的「純 pH 調整槽只加酸/鹼」就不符合現況, 改用實際加藥列表
-        eff_desc = desc_text
-        if _chem_desc and ("純" in desc_text or "只加酸" in desc_text or "只加鹼" in desc_text):
-            eff_desc = (
-                f"該槽實際加藥: {_chem_desc}; "
-                f"規則庫學理: {desc_text} — 實際加藥與規則庫定位不符, 請確認槽體功能。"
-            )
-        elif _chem_desc:
-            eff_desc = f"{desc_text} (實際加藥: {_chem_desc})"
+        # Bug 2 (v2, Nick 定調):
+        # 進≠出 判斷路徑只關心「有沒有加藥 + 帳算對沒」, 不碎念槽體功能
+        # - 有加藥: 列出加藥清單, 讓審查員自己看合不合理
+        # - 沒加藥: 提示「無加藥卻進出不同, 疑水質表填錯」
+        if _chem_desc:
+            eff_desc = f"該槽實際加藥: {_chem_desc}。"
+        else:
+            eff_desc = "該槽無申報加藥, 進出質量卻不平衡, 疑水質表填寫錯誤或漏列加藥。"
 
         findings.append({
             "嚴重度": eff_sev,
