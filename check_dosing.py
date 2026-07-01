@@ -215,12 +215,26 @@ def detect_system(unit):
 
 
 def has_chemical(measure_params, keywords):
-    """檢查 measure_params 中是否含某類藥劑。"""
+    """檢查 measure_params 中是否含某類藥劑.
+
+    使用 dosing_rules_loader._match_drug_name (支援 DRUG_NAME_ALIAS + 片段對照),
+    可正確處理 "氫氧化鈉" ↔ "NaOH", 排版壞的 "氫氧化依加藥桶液位鈉" 等 case.
+    """
     if not measure_params:
         return False
+    try:
+        import dosing_rules_loader as _drl
+        _match = _drl._match_drug_name
+    except Exception:
+        _match = None
     for pname in measure_params.keys():
+        text = str(pname)
         for kw in keywords:
-            if kw in str(pname):
+            # 先試直接子字串 (向後相容)
+            if kw in text:
+                return True
+            # 再試別名/片段 (支援中英互譯 + PDF 排版壞)
+            if _match and _match(text, kw):
                 return True
     return False
 
@@ -303,9 +317,24 @@ def check_dosing_chemistry(unit):
 
     # 2. 鎳系應加 NaOH, 但 measure 沒有任何鹼劑 → 違反
     # 兼容兩種 schema: 舊 hardcoded DOSING_RULES (list[str]) 跟 新 _加藥規則 (list[dict])
-    should_drugs = rule.get("should_drugs") or rule.get("should") or []
-    if should_drugs and isinstance(should_drugs[0], dict):
-        should_drugs = [d['drug'] for d in should_drugs]
+    # tank_type 過濾: 例 T01-24 慢混槽 只該 match tank_type="慢混池", 不該 match "pH調整池" 規則
+    std_tank_lc = str(std_tank or "").lower()
+    name_lc = (unit.get("name_in_doc") or "").lower()
+
+    def _tank_type_matches(rt):
+        """rule 的 tank_type 有沒有跟本單元的 std_tank / name 對得上."""
+        if not rt:
+            return True  # 沒指定就通用
+        rt_lc = str(rt).lower()
+        return rt_lc in std_tank_lc or rt_lc in name_lc
+
+    should_full = rule.get("should") or []
+    if should_full and isinstance(should_full[0], dict):
+        # 用 tank_type 過濾 (慢混槽 只 match 慢混池規則, 不 match pH調整池規則)
+        should_full = [d for d in should_full if _tank_type_matches(d.get("tank_type"))]
+        should_drugs = [d['drug'] for d in should_full]
+    else:
+        should_drugs = rule.get("should_drugs") or should_full or []
     if should_drugs:
         has_should = has_chemical(measure, should_drugs)
         if not has_should:
@@ -323,9 +352,13 @@ def check_dosing_chemistry(unit):
             })
 
     # 3. 鎳系不該加 PAC/Polymer, 但 measure 有 → 不合理 (學理硬性禁加)
-    should_not_drugs = rule.get("should_not_drugs") or rule.get("should_not") or []
-    if should_not_drugs and isinstance(should_not_drugs[0], dict):
-        should_not_drugs = [d['drug'] for d in should_not_drugs]
+    # 同樣用 tank_type 過濾: 鎳系 pH 池禁 PAC, 慢混槽本來就可以加 polymer
+    should_not_full = rule.get("should_not") or []
+    if should_not_full and isinstance(should_not_full[0], dict):
+        should_not_full = [d for d in should_not_full if _tank_type_matches(d.get("tank_type"))]
+        should_not_drugs = [d['drug'] for d in should_not_full]
+    else:
+        should_not_drugs = rule.get("should_not_drugs") or should_not_full or []
     if should_not_drugs:
         has_not = has_chemical(measure, should_not_drugs)
         if has_not:

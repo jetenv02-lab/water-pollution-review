@@ -107,14 +107,26 @@ NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
 
 def get_param_range(params_dict, key_substring):
-    """從 design_params 或 measure_params 找名稱含 key_substring 的參數,回傳 (min, max)。"""
+    """從 design_params 或 measure_params 找名稱含 key_substring 的參數,回傳 (min, max, pname)。
+
+    修訂: 只要 min 或 max 其中一個有值就回傳, 由呼叫端判斷是否需標「僅登載單邊」。
+    這樣才不會把「有登載但只填下限」的槽誤判成完全未登載。
+    """
     for pname, pval in params_dict.items():
         if key_substring in pname:
             if isinstance(pval, dict):
                 lo = pval.get("min")
                 hi = pval.get("max")
-                if lo is not None and hi is not None:
-                    return float(lo), float(hi), pname
+                if lo is not None or hi is not None:
+                    try:
+                        lo_f = float(lo) if lo is not None else None
+                    except (TypeError, ValueError):
+                        lo_f = None
+                    try:
+                        hi_f = float(hi) if hi is not None else None
+                    except (TypeError, ValueError):
+                        hi_f = None
+                    return lo_f, hi_f, pname
     return None, None, None
 
 
@@ -336,9 +348,29 @@ def check_rule_against_unit(rule, unit):
         if design_key in target_item or design_key in rule_text:
             lo, hi, pname = get_param_range({**design_params, **measure_params}, design_key)
             if pname:
+                # 「轉速應為固定值而非範圍值」規則 (陳映嘉 D090b):
+                # 若廠商已填固定值 (min == max), 就是合規, 不要誤觸發
+                is_rpm_rule = (
+                    ("轉速" in rule_text or "固定值" in rule_text
+                     or "區間值" in rule_text or "攪拌機" in target_item)
+                    and design_key == "攪拌"
+                )
+                if is_rpm_rule and lo is not None and hi is not None:
+                    try:
+                        if float(lo) == float(hi):
+                            continue  # 固定值 → 合規, 不出 finding
+                    except (TypeError, ValueError):
+                        pass
+                # 顯示: 兩邊都有 → "0.2~1.5"; 只有一邊 → "≥ 0.2" 或 "≤ 1.5"
+                if lo is not None and hi is not None:
+                    val_str = f"{lo}~{hi}"
+                elif lo is not None:
+                    val_str = f"≥ {lo} (未填上限)"
+                else:
+                    val_str = f"≤ {hi} (未填下限)"
                 return _make_finding(
                     "待確認", check_type, code, std_tank, target_item,
-                    f"申請文件 {pname} = {lo}~{hi}, 規則: {rule_text[:80]}",
+                    f"申請文件 {pname} = {val_str}, 規則: {rule_text[:80]}",
                     deficiency_id, source
                 )
             # 規則指該項目但單元沒登載 → 也標記
