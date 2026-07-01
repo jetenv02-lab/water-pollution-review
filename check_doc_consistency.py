@@ -130,9 +130,34 @@ def check_diagram_presence(app_data, pdf_path=None):
             })
 
     # 進階版 (有 pdf_path 時): 掃 PDF 找含「圖」字眼但無圖的頁
+    #
+    # 排除清單: 這類頁本來就會提到「示意圖」等字眼但不需要真的長一張圖
+    # (例如檢核表列出「應檢附示意圖」是描述性文字, 不是「該頁應該是張圖」)
+    #
+    # 誤判修正 (2026-06-30):
+    # - 排除申請目錄/變更項目表/檢核表/簽證表 等純文字章節
+    # - 頁碼改雙標示 (物理頁 N / 內部頁次 M) 讓技師對得上 PDF reader
+    # - 嚴重度降為「提醒」(這是自動偵測, 誤判率高, 不宜「待確認」)
+    EXCLUDE_TITLES = [
+        "變更項目表",           # p5 型: 勾選清單有「水質水量平衡示意圖」字眼
+        "水污染防治措施計畫及許可申請文件檢核表",  # 檢核表列出應附的文件
+        "水污染防治措施資料技師簽證表",  # 簽證表提到附件目錄
+        "簽證工作底稿",         # 簽證附件目錄
+        "涉及變更之相關附件",   # 檢核表項目行
+        "應檢附之相關附件",     # 檢核表項目行
+        "檢附之相關附件",       # 檢核表項目行
+        "檢核表",              # 通用檢核表
+        "附件清單",            # 附件目錄
+        "頁至",                # 「附 1 頁至 附 76 頁」這種描述性內容
+        # 章節總稱 (示意圖字眼出現在章節大標, 但該章實際內容是表格說明)
+        "處理單元之進出水質資料",  # p13 型: 章節總稱含「示意圖」但內容是水質表
+        "進出處理單元之水質資料",  # 同上變體
+        "進流水流編號",         # 有 WTB/WTA 編號 = 這頁是水質表, 不是圖
+        "水質項目",             # 水質表表頭
+    ]
     if pdf_path:
         try:
-            import pdfplumber
+            import pdfplumber, re
             with pdfplumber.open(pdf_path) as pdf:
                 for pn, page in enumerate(pdf.pages, start=1):
                     try:
@@ -140,28 +165,41 @@ def check_diagram_presence(app_data, pdf_path=None):
                     except Exception:
                         continue
                     # 是否有「示意圖 / 附圖 / 流向圖 / 平衡圖」標題
-                    if any(kw in text for kw in ["示意圖", "附圖", "流向圖", "水量平衡圖"]):
-                        # 看該頁有沒有圖
-                        try:
-                            n_images = len(page.images or [])
-                        except Exception:
-                            n_images = 0
-                        # 也用「文字字數 < 200」當作純圖頁
-                        text_len = len(text.strip())
-                        if n_images == 0 and text_len > 500:
-                            # 有大量文字但沒圖, 該頁可能是「該有圖但圖沒顯示」
-                            findings.append({
-                                "嚴重度": "待確認",
-                                "類型": "文件一致性",
-                                "單元": f"頁 {pn}",
-                                "標準槽體": "",
-                                "對照項目": "可能漏附圖",
-                                "描述": (
-                                    f"頁 {pn} 含「示意圖 / 流向圖」等標題, 但偵測不到圖片物件。"
-                                    f"請確認該頁是否漏附圖, 或圖以 PDF 文字向量方式呈現 (此情況可忽略)。"
-                                ),
-                                "依據": "PDF 圖頁完整性自動偵測",
-                            })
+                    if not any(kw in text for kw in ["示意圖", "附圖", "流向圖", "水量平衡圖"]):
+                        continue
+                    # 排除純文字章節 (檢核表 / 簽證表 / 申請目錄 等)
+                    if any(bad in text for bad in EXCLUDE_TITLES):
+                        continue
+                    # 看該頁有沒有圖
+                    try:
+                        n_images = len(page.images or [])
+                    except Exception:
+                        n_images = 0
+                    # 也用「文字字數 < 200」當作純圖頁
+                    text_len = len(text.strip())
+                    if n_images != 0 or text_len <= 500:
+                        continue
+
+                    # 抓「頁次: N/M」讓 finding 描述雙標示
+                    inner_page = ""
+                    m_page = re.search(r"頁次[:：]\s*(\d+)\s*[／/]\s*(\d+)", text)
+                    if m_page:
+                        inner_page = f" (內部頁次 {m_page.group(1)}/{m_page.group(2)})"
+                    page_label = f"頁 {pn}{inner_page}"
+
+                    findings.append({
+                        "嚴重度": "提醒",  # 降級: 自動偵測誤判率高
+                        "類型": "文件一致性",
+                        "單元": page_label,
+                        "標準槽體": "",
+                        "對照項目": "可能漏附圖",
+                        "描述": (
+                            f"物理頁 p{pn}{inner_page} 含「示意圖 / 流向圖」等標題, "
+                            f"但偵測不到圖片物件。請確認該頁是否漏附圖, "
+                            f"或圖以 PDF 文字向量方式呈現 (此情況可忽略)。"
+                        ),
+                        "依據": "PDF 圖頁完整性自動偵測",
+                    })
         except Exception:
             pass
 
