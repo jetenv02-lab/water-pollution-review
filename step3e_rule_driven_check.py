@@ -152,6 +152,119 @@ def get_concentration_diff(unit, item_name):
 
 
 # ──────────────────────────────────────────────────
+# 學理去除率範圍查詢 (讀 _槽體學理 Y/Z 欄)
+# ──────────────────────────────────────────────────
+
+_REMOVAL_CACHE = None
+
+
+def _load_removal_ranges():
+    """從 規則庫.xlsx _槽體學理 分頁讀 Y (主要削減項目) + Z (削減率範圍%) 欄.
+
+    回傳: dict[標準槽體 → dict[水質項目 → (min%, max%)]]
+    例: {"沉澱池": {"SS": (80, 95), "銅": (60, 90), ...}, ...}
+    """
+    global _REMOVAL_CACHE
+    if _REMOVAL_CACHE is not None:
+        return _REMOVAL_CACHE
+
+    xlsx_path = os.path.join(BASE, "規則庫.xlsx")
+    result = {}
+    if not os.path.exists(xlsx_path):
+        _REMOVAL_CACHE = result
+        return result
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+        if "_槽體學理" not in wb.sheetnames:
+            _REMOVAL_CACHE = result
+            return result
+        ws = wb["_槽體學理"]
+        # Y = col 25, Z = col 26
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if len(row) < 26:
+                continue
+            tank = row[0]
+            status = row[7]  # H 狀態
+            items_str = row[24] if len(row) > 24 else None  # Y
+            rates_str = row[25] if len(row) > 25 else None  # Z
+            if not tank or str(status or "").strip() != "V":
+                continue
+            if not items_str or not rates_str:
+                continue
+            items = [s.strip() for s in str(items_str).split(";") if s.strip()]
+            rates = [s.strip() for s in str(rates_str).split(";") if s.strip()]
+            tank_map = {}
+            for it, rt in zip(items, rates):
+                # 解析 "80~95" 或 "80~95 (備註)"
+                rt_clean = rt.split("(")[0].strip()
+                if "~" in rt_clean:
+                    lo_s, hi_s = rt_clean.split("~", 1)
+                    try:
+                        lo = float(lo_s.strip())
+                        hi = float(hi_s.strip())
+                        tank_map[it] = (lo, hi)
+                    except ValueError:
+                        continue
+            if tank_map:
+                result[str(tank).strip()] = tank_map
+        wb.close()
+    except Exception as e:
+        print(f"[step3e _load_removal_ranges 失敗] {e}")
+    _REMOVAL_CACHE = result
+    return result
+
+
+# 水質項目同義詞 (規則庫用中文, PDF 抽出來可能有 mg/L 後綴)
+_ITEM_SYNONYM_MAP = {
+    "SS": ["SS", "懸浮固體", "懸浮固體（mg/L）", "懸浮固體(mg/L)"],
+    "懸浮固體": ["懸浮固體", "SS", "懸浮固體（mg/L）", "懸浮固體(mg/L)"],
+    "COD": ["COD", "化學需氧量", "化學需氧量（mg/L）", "化學需氧量(mg/L)"],
+    "BOD": ["BOD", "生化需氧量", "生化需氧量（mg/L）", "生化需氧量(mg/L)"],
+    "氨氮": ["氨氮", "氨氮（mg/L）", "氨氮(mg/L)"],
+    "油脂": ["油脂", "油脂（mg/L）", "油脂(mg/L)"],
+    "真色色度": ["真色色度", "色度"],
+    "色度": ["色度", "真色色度"],
+    "銅": ["銅"], "鎳": ["鎳"], "鋅": ["鋅"], "鉛": ["鉛"],
+    "鎘": ["鎘"], "總鉻": ["總鉻", "鉻"], "六價鉻": ["六價鉻"],
+    "氰化物": ["氰化物"], "含水率": ["含水率", "含水率(%)", "含水率（%）"],
+    "濁度": ["濁度"], "游離氯": ["游離氯"], "異味": ["異味"],
+}
+
+
+def _get_removal_range(std_tank, item):
+    """查該槽體該項目的學理去除率範圍.
+
+    Returns:
+        (lo, hi) 或 (None, None) 若未登記
+    """
+    ranges = _load_removal_ranges()
+    tank_map = ranges.get(std_tank)
+    if not tank_map:
+        # 別名 fallback
+        for t, m in ranges.items():
+            if t in std_tank or std_tank in t:
+                tank_map = m
+                break
+    if not tank_map:
+        return (None, None)
+
+    # 直接匹配
+    if item in tank_map:
+        return tank_map[item]
+    # 同義詞匹配
+    candidates = _ITEM_SYNONYM_MAP.get(item, [item])
+    for cand in candidates:
+        if cand in tank_map:
+            return tank_map[cand]
+    # 反向: 規則庫的 key 可能是 item 的同義
+    for key in tank_map:
+        if key == item or key in item or item in key:
+            return tank_map[key]
+    return (None, None)
+
+
+# ──────────────────────────────────────────────────
 # 規則啟發式檢查
 # ──────────────────────────────────────────────────
 
@@ -273,80 +386,136 @@ def check_rule_against_unit(rule, unit):
             )
 
     # ── 6. 去除率 / 重金屬 ──
-    # 修訂 (2026-07-01, Nick 反映 D054 每次都跳):
-    #   D054 原意「快混槽表現重金屬去除 → 不合理 (無沉澱功能)」, 但舊實作只要
-    #   規則對照項目含「鋅/銅/...」就無條件觸發, 導致放流池/沉澱池/中和池都會跳.
-    #   加 4 個過濾條件, 只在「該規則真正該觸發的情境」才 finding:
-    #   (a) 匹配槽體適用性: 若規則有指定槽體, 只對該類槽觸發
-    #   (b) 排除放流池 (那是 D011 該做的檢查, 不重複)
-    #   (c) 只對「明顯去除」(≥ 30%) 觸發 — 進=出 0% 不該報
-    #   (d) 若槽體本來就有分離功能 (沉澱/浮除/砂濾/離子交換/活性碳),
-    #       表現去除是合理的, 不觸發
+    # 修訂 (2026-07-01 v2, Nick 補「去除率是要抓的」):
+    #   分兩類:
+    #   類 1 「無分離功能槽」(快混/慢混/pH/中和/氧化):
+    #        → D054 學理, 顯著去除 (>= 30%) 就 finding「無分離不應去除」
+    #   類 2 「有分離功能槽」(沉澱/浮除/砂濾/離子交換/活性碳/MBR):
+    #        → 對照 _get_removal_range 讀 _槽體學理 Y/Z 欄的學理範圍
+    #        → 太低: 待確認 (實測偏低, 需檢查加藥/pH/HRT)
+    #        → 太高: 提醒 (實測偏高請確認數據合理性)
+    #   共同過濾: (a) 排除放流池 (b) 槽體適用性
     heavy_metals = ["銅", "鎳", "鋅", "鉛", "鎘", "鉻", "總鉻", "六價鉻",
                     "錫", "汞", "總汞", "砷", "鉬"]
     SEPARATION_KEYWORDS = ["沉澱", "沉降", "浮除", "砂濾", "過濾器", "活性碳",
                            "離子交換", "膜", "MBR", "油脂分離"]
     rule_tank = (rule.get("標準槽體名稱") or "").strip()
+    # 「金屬去除率」/「去除率」這種通稱也視為觸發對每個金屬跑
+    is_generic_removal = any(g in target_item for g in
+                              ["金屬去除率", "去除率", "重金屬去除"])
     for metal in heavy_metals:
-        if metal in target_item:
-            # (b) 排除放流池
+        # 明確含金屬名 OR 是通稱去除率 (對每個金屬都跑)
+        if metal in target_item or is_generic_removal:
+            # (a) 排除放流池
             if "放流" in std_tank:
                 continue
-            # (a) 槽體適用性: 若規則明指某槽體, 只對該槽觸發
-            #     (文件類) / (現場設備類) 這類通用規則不做槽體過濾
+            # (b) 槽體適用性
             if rule_tank and rule_tank not in ("(文件類)", "(現場設備類)"):
                 if rule_tank not in std_tank and std_tank not in rule_tank:
                     continue
-            # (d) 有分離功能的槽體, 表現重金屬去除是合理的, 不觸發
-            if any(kw in std_tank for kw in SEPARATION_KEYWORDS):
-                continue
+
             c_in, c_out = get_concentration_diff(unit, metal)
             if c_in is None or c_out is None or c_in <= 0:
                 continue
             removal = (c_in - c_out) / c_in * 100
-            # (c) 只對「明顯去除」(>= 30%) 觸發
-            if removal < 30:
-                continue
-            # 通過所有過濾條件 → 這個是真的可疑
-            return _make_finding(
-                "待確認", "去除率", code, std_tank, target_item,
-                f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%), "
-                f"該單元 ({std_tank}) 無明顯分離機制, 不應表現重金屬去除. "
-                f"規則: {rule_text[:80]}",
-                deficiency_id, source
-            )
+
+            is_separation_tank = any(kw in std_tank for kw in SEPARATION_KEYWORDS)
+            expected_lo, expected_hi = _get_removal_range(std_tank, metal)
+
+            if is_separation_tank:
+                # 類 2: 對照學理範圍
+                if expected_lo is not None and expected_hi is not None:
+                    if removal < expected_lo:
+                        return _make_finding(
+                            "待確認", "去除率", code, std_tank, target_item,
+                            f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
+                            f"依學理 {std_tank} {metal} 去除率應為 {expected_lo:.0f}~{expected_hi:.0f}%, "
+                            f"實測偏低, 請重新審視加藥量/pH/HRT/助凝劑等操作參數. "
+                            f"規則: {rule_text[:60]}",
+                            deficiency_id, source
+                        )
+                    if removal > expected_hi:
+                        return _make_finding(
+                            "提醒", "去除率", code, std_tank, target_item,
+                            f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
+                            f"依學理 {std_tank} {metal} 去除率通常為 {expected_lo:.0f}~{expected_hi:.0f}%, "
+                            f"實測偏高請確認數據合理性 (是否進流高估或出流低於檢量極限).",
+                            deficiency_id, source
+                        )
+                else:
+                    # 學理未登記, fallback
+                    if removal >= 30:
+                        return _make_finding(
+                            "提醒", "去除率", code, std_tank, target_item,
+                            f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
+                            f"請確認是否符合學理範圍 (規則庫尚未登記 {std_tank} {metal} 學理值). "
+                            f"規則: {rule_text[:60]}",
+                            deficiency_id, source
+                        )
+            else:
+                # 類 1: 無分離功能, D054 學理
+                if removal >= 30:
+                    return _make_finding(
+                        "待確認", "去除率", code, std_tank, target_item,
+                        f"{metal} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
+                        f"該單元 ({std_tank}) 無明顯分離機制, 不應表現重金屬去除. "
+                        f"規則: {rule_text[:60]}",
+                        deficiency_id, source
+                    )
 
     # ── 7. SS / 懸浮固體 / BOD / COD ──
-    # 同樣加過濾: 槽體適用性 + 排除放流池 + 顯著變動
+    # 同樣邏輯: 分離槽對照學理範圍, 非分離槽用顯著變動
     for water_item in ["SS", "懸浮固體", "BOD", "COD", "氨氮", "總氮", "總磷",
                        "硝酸鹽氮", "硼", "氟鹽", "氰化物", "油脂", "真色色度"]:
         if water_item in target_item:
-            # 排除放流池
             if "放流" in std_tank:
                 continue
-            # 槽體適用性 (通用規則除外)
             if rule_tank and rule_tank not in ("(文件類)", "(現場設備類)"):
                 if rule_tank not in std_tank and std_tank not in rule_tank:
                     continue
             c_in, c_out = get_concentration_diff(unit, water_item)
             if c_in is None or c_out is None:
-                # 找含「mg/L」後綴的版本
                 for variant in [water_item + "（mg/L）", water_item + "(mg/L)"]:
                     c_in, c_out = get_concentration_diff(unit, variant)
                     if c_in is not None:
                         break
             if c_in is None or c_out is None or c_in <= 0:
                 continue
-            # 顯著變動判斷 (超過 30% 才觸發)
             change_pct = abs(c_in - c_out) / c_in * 100
-            if change_pct < 30:
-                continue
-            return _make_finding(
-                "待確認", check_type or "水質標準", code, std_tank, target_item,
-                f"{water_item} 進{c_in:.2f}→出{c_out:.2f} (變化 {change_pct:.1f}%), "
-                f"規則: {rule_text[:80]}",
-                deficiency_id, source
-            )
+
+            is_separation_tank = any(kw in std_tank for kw in SEPARATION_KEYWORDS)
+            # 統一項目名 (規則庫用 SS/COD/BOD 簡化)
+            std_item = "SS" if water_item == "懸浮固體" else water_item
+            expected_lo, expected_hi = _get_removal_range(std_tank, std_item)
+
+            if is_separation_tank and expected_lo is not None:
+                if c_out < c_in:  # 只對下降時對比學理
+                    removal = (c_in - c_out) / c_in * 100
+                    if removal < expected_lo:
+                        return _make_finding(
+                            "待確認", "去除率", code, std_tank, target_item,
+                            f"{water_item} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
+                            f"依學理 {std_tank} {water_item} 去除率應為 {expected_lo:.0f}~{expected_hi:.0f}%, "
+                            f"實測偏低, 請重新審視操作參數.",
+                            deficiency_id, source
+                        )
+                    if removal > expected_hi:
+                        return _make_finding(
+                            "提醒", "去除率", code, std_tank, target_item,
+                            f"{water_item} 進{c_in:.2f}→出{c_out:.2f} (去除 {removal:.1f}%). "
+                            f"依學理 {std_tank} {water_item} 去除率通常為 {expected_lo:.0f}~{expected_hi:.0f}%, "
+                            f"實測偏高請確認數據合理性.",
+                            deficiency_id, source
+                        )
+            elif change_pct >= 30:
+                # 無學理範圍或非分離槽, 顯著變動 fallback
+                direction = "下降" if c_out < c_in else "上升"
+                return _make_finding(
+                    "待確認", check_type or "水質標準", code, std_tank, target_item,
+                    f"{water_item} 進{c_in:.2f}→出{c_out:.2f} ({direction} {change_pct:.1f}%), "
+                    f"規則: {rule_text[:80]}",
+                    deficiency_id, source
+                )
 
     # ── 8. 操作條件 (反洗頻率、更換頻率) ──
     for op_kw in ["反洗", "更換頻率", "操作參數", "操作時間"]:
