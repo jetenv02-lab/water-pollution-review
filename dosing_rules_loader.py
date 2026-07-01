@@ -140,13 +140,124 @@ def get_typical_dosing(std_tank):
     return {e["drug"]: e["mg_per_L"] for e in entries}
 
 
-def compute_chemical_mass(unit, item, q_cmd=None):
-    """計算該單元因加藥引入指定水質項目的質量 (kg/d)。
+# ──────────────────────────────────────────────────
+# 從廠商申報 (measure_params) 讀實際 kg/day
+# 2026-07-01: Nick 反映廠商實際劑量在處理設施表中, step2 已抽出
+# 例: measure_params["加藥量(NaOH（45％）)"] = {"min": 0.87, "max": 8.672}
+# ──────────────────────────────────────────────────
+
+# 藥劑名同義字對照 (廠商 PDF 上的名稱 → 規則庫的標準名)
+DRUG_NAME_ALIAS = {
+    "NaOH": ["NaOH", "氫氧化鈉", "苛性鈉", "燒鹼", "片鹼"],
+    "H2SO4": ["H2SO4", "硫酸", "H₂SO₄"],
+    "HCl": ["HCl", "鹽酸", "氫氯酸"],
+    "Ca(OH)2": ["Ca(OH)2", "氫氧化鈣", "石灰", "石灰乳", "熟石灰"],
+    "PAC": ["PAC", "多氯化鋁", "聚合氯化鋁", "AL13"],
+    "PAM": ["PAM", "Polymer", "polymer", "高分子", "聚丙烯醯胺",
+            "助凝劑", "陽離子高分子", "陰離子高分子"],
+    "FeCl3": ["FeCl3", "三氯化鐵", "氯化鐵"],
+    "Al2(SO4)3": ["Al2(SO4)3", "硫酸鋁", "鋁明礬", "Al₂(SO₄)₃"],
+    "FeSO4": ["FeSO4", "硫酸亞鐵", "FeSO₄"],
+    "NaClO": ["NaClO", "NaOCl", "次氯酸鈉", "漂白水"],
+    "NaHSO3": ["NaHSO3", "亞硫酸氫鈉", "NaHSO₃"],
+    "H2O2": ["H2O2", "過氧化氫", "雙氧水", "H₂O₂"],
+    "Na2S": ["Na2S", "硫化鈉", "Na₂S"],
+    "尿素": ["尿素", "urea", "CO(NH2)2"],
+    "磷酸": ["磷酸", "H3PO4", "H₃PO₄"],
+}
+
+
+def _match_drug_name(text, drug_key):
+    """比對 measure_params 的參數名是否包含指定藥劑."""
+    if not text:
+        return False
+    text_str = str(text)
+    aliases = DRUG_NAME_ALIAS.get(drug_key, [drug_key])
+    for alias in aliases:
+        if alias in text_str:
+            return True
+    return False
+
+
+def _parse_concentration_pct(param_name):
+    """從參數名解析商品濃度 (%). 例: '加藥量(NaOH（45％）)' → 45.0. 找不到回 None."""
+    if not param_name:
+        return None
+    m = re.search(r"[（(](\d+(?:\.\d+)?)\s*[％%][)）]", str(param_name))
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def get_declared_dosing_kg_per_day(unit, drug_key):
+    """從 measure_params 讀廠商申報的藥劑 kg/day (純物質量, 已扣商品濃度).
 
     Args:
-        unit: 處理單元 dict (有 std_tank 欄)
+        unit: 處理單元 dict
+        drug_key: 藥劑 key (例 "NaOH", "PAC")
+
+    Returns:
+        (avg_kg_per_day_純, 商品濃度%) 或 (None, None) 若未申報
+
+    例:
+        param "加藥量(NaOH（45％）)" min=0.87 max=8.672
+        → 商品平均 4.77 kg/d, NaOH 純量 = 4.77 × 45% = 2.15 kg/d
+        → 回傳 (2.15, 45.0)
+    """
+    if not isinstance(unit, dict):
+        return (None, None)
+    measure = unit.get("measure_params") or {}
+    for pname, pval in measure.items():
+        if not _match_drug_name(pname, drug_key):
+            continue
+        if "加藥" not in str(pname):
+            continue
+        if not isinstance(pval, dict):
+            continue
+        vmin = pval.get("min")
+        vmax = pval.get("max")
+        try:
+            vmin = float(vmin) if vmin is not None else None
+            vmax = float(vmax) if vmax is not None else None
+        except (TypeError, ValueError):
+            continue
+        # 取平均當估算 (min/max 為操作範圍)
+        if vmin is not None and vmax is not None:
+            avg_commercial = (vmin + vmax) / 2
+        elif vmax is not None:
+            avg_commercial = vmax
+        elif vmin is not None:
+            avg_commercial = vmin
+        else:
+            continue
+
+        # 扣商品濃度得純物質
+        pct = _parse_concentration_pct(pname)
+        if pct is not None and pct > 0:
+            pure_kg = avg_commercial * pct / 100.0
+        else:
+            pure_kg = avg_commercial  # 假設是純物質 (若沒標濃度)
+            pct = 100.0
+
+        return (pure_kg, pct)
+
+    return (None, None)
+
+
+def compute_chemical_mass(unit, item, q_cmd=None):
+    """計算該單元因加藥引入指定水質項目的質量 (kg/d).
+
+    優先級:
+    (1) 廠商 measure_params 申報的實際 kg/day  ← 精準
+    (2) 規則庫 _加藥規則 典型劑量 mg/L × 進流 Q  ← 通用 fallback
+
+    Args:
+        unit: 處理單元 dict (有 std_tank + measure_params)
         item: 水質項目名 (例: "懸浮固體（mg/L）")
-        q_cmd: 進流總 Q (m³/d)。若 None 自動加總 stream_q 的 WTB。
+        q_cmd: 進流總 Q (m³/d). None 時自動加總 stream_q 的 WTB.
 
     Returns:
         kg/d (float)
@@ -169,16 +280,29 @@ def compute_chemical_mass(unit, item, q_cmd=None):
                 q = info.get("q_cmd")
                 if isinstance(q, (int, float)):
                     q_cmd += float(q)
-    if not q_cmd or q_cmd <= 0:
-        return 0.0
 
     total = 0.0
     for entry in entries:
         # 找該藥劑對該水質項目的轉換係數
+        item_coef = 0.0
         for it, coef in zip(entry["items"], entry["coefs"]):
             if it == item and coef > 0:
-                # mg/L × m³/d / 1000 × 轉換係數 = kg/d
-                total += entry["mg_per_L"] * q_cmd / 1000.0 * coef
+                item_coef = coef
+                break
+        if item_coef <= 0:
+            continue
+
+        # 優先讀廠商申報
+        declared_kg, _pct = get_declared_dosing_kg_per_day(unit, entry["drug"])
+        if declared_kg is not None and declared_kg > 0:
+            # 廠商申報值 (kg/d 純物質) × 轉換係數 = kg/d 引入項目
+            total += declared_kg * item_coef
+        else:
+            # fallback 規則庫典型值
+            if not q_cmd or q_cmd <= 0:
+                continue
+            # mg/L × m³/d / 1000 × 轉換係數 = kg/d
+            total += entry["mg_per_L"] * q_cmd / 1000.0 * item_coef
     return total
 
 
@@ -206,16 +330,27 @@ def describe_chemical_contribution(unit, item, q_cmd=None):
                 q = info.get("q_cmd")
                 if isinstance(q, (int, float)):
                     q_cmd += float(q)
-    if not q_cmd or q_cmd <= 0:
-        return ""
 
     parts = []
     total = 0.0
     for entry in entries:
         for it, coef in zip(entry["items"], entry["coefs"]):
-            if it == item and coef > 0:
+            if it != item or coef <= 0:
+                continue
+            # 優先讀廠商申報
+            declared_kg, pct = get_declared_dosing_kg_per_day(unit, entry["drug"])
+            if declared_kg is not None and declared_kg > 0:
+                added = declared_kg * coef
+                parts.append(
+                    f"{entry['drug']} 廠商申報 {declared_kg:.2f}kg/d純物質"
+                    f"(@{pct:.0f}%)×{coef}={added:.1f}"
+                )
+                total += added
+            elif q_cmd and q_cmd > 0:
                 added = entry["mg_per_L"] * q_cmd / 1000.0 * coef
-                parts.append(f"{entry['drug']} {entry['mg_per_L']}mg/L×{coef}={added:.1f}")
+                parts.append(
+                    f"{entry['drug']} 典型 {entry['mg_per_L']}mg/L×{coef}={added:.1f}"
+                )
                 total += added
 
     if not parts:
