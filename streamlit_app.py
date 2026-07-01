@@ -1542,6 +1542,38 @@ with tab1:
         pdf_filename = st.session_state.get("_pdf_filename", "")
 
         st.success(f"✅ 抽取完成! 共 **{app_data['total_units']}** 個處理單元 · 來源: {pdf_filename}")
+
+        # ───────── 防呆檢查 (2026-07-01): 偵測「PDF 結構不支援」case ─────────
+        # 避免同事上傳客製化格式 PDF (例如 P-01 而非 T01) 時看到「總審查項 4 / 不合理 0」誤以為完美
+        _n_units = app_data.get("total_units", 0)
+        _pdf_pages = app_data.get("total_pages", 0)
+        _facility_pages = len(sections.get("facility_table", []))
+        _quality_pages = len(sections.get("quality_data", []))
+
+        if _n_units == 0:
+            st.error(
+                "🚨 **系統未偵測到任何處理單元**\n\n"
+                "可能原因:\n"
+                "1. 該 PDF 使用非 T01-XX 格式的單元代號 (例如 P-01 / HU-01, 系統目前只認 T01/T02 系列)\n"
+                "2. 該 PDF 處理設施表 / 水質表為純圖片 (需 OCR)\n"
+                "3. 上傳的可能不是水措計畫本文 (而是附件/結論報告/流程圖冊)\n\n"
+                "**建議**: 確認上傳檔案是水措計畫申請本文, 或用下方「補充: 上傳圖片做局部判讀 (Gemini Vision)」補抓流程圖。"
+            )
+        elif _n_units < 5 and _pdf_pages >= 30:
+            st.warning(
+                f"⚠️ **抽取數異常**: {_pdf_pages} 頁 PDF 只抽到 **{_n_units} 個單元**, 可能漏抓\n\n"
+                "常見原因:\n"
+                "- 該 PDF 用「一頁一單元橫向格式」(需 step2 額外處理)\n"
+                "- 該 PDF 單元代號非 T01-XX 格式\n"
+                "- 處理設施表為圖片\n\n"
+                "**建議**: 先看下方「本文件章節定位」判斷是否有章節「未找到」, 再決定要不要繼續審查。"
+            )
+        elif _facility_pages == 0 and _quality_pages == 0 and _n_units > 0:
+            st.warning(
+                "⚠️ **核心章節缺失**: 系統抽到單元, 但「處理設施資料表」與「進出水質資料表」都未定位到\n\n"
+                "後續質平/HRT/加藥/放流檢查可能不準, 建議人工核對關鍵單元後再送審。"
+            )
+
         # 技師註解抽到後僅供「AI vs 人工比對」用, 不顯示總覽
         # (註解仍在 app_data['reviewer_notes'], 供 AI/人工 recall 評估或單元詳細頁配對)
 

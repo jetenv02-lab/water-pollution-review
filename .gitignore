@@ -20,6 +20,10 @@ deficiency_dump*.txt
 # 規則庫.xlsx 已升級為主檔, 需要 push 到 GitHub (v2 結構)
 規則庫_範本.xlsx
 
+# 資料/輸出目錄 (case 資料、跑審查結果, 都是廠商資料含個資, 不上傳)
+data/outputs/
+# data/rules/ 可上傳 (範本 + 標準表)
+
 # Google API 金鑰 (絕對不可上傳)
 service_account.json
 *.json.key
@@ -48,3 +52,6 @@ desktop.ini
 
 # Logs
 *.log
+
+# Claude Code 本地設定 (permissions)
+.claude/
