@@ -885,10 +885,20 @@ with tab1:
                 except Exception as _e_dis:
                     print(f"[check_discharge 失敗] {_e_dis}")
 
-                # 合併全部層 (規則庫驅動 → RPM → 放流放最後)
+                # ─── 新增: 進=出完全相同 偵測 (廠商偷懶填表, 2026-06-30) ───
+                findings_identical = []
+                try:
+                    from check_identical_inout import check_all_units_identical_inout
+                    findings_identical = check_all_units_identical_inout(
+                        app_data_local.get("units") or {}
+                    )
+                except Exception as _e_id:
+                    print(f"[check_identical 失敗] {_e_id}")
+
+                # 合併全部層 (規則庫驅動 → RPM → 放流 → 進=出 放最後)
                 st.session_state["_check_findings"] = (
                     findings_basic + findings_adv + findings_rule
-                    + findings_rpm + findings_discharge
+                    + findings_rpm + findings_discharge + findings_identical
                 )
 
                 # ─── Step 4: 水量平衡示意圖解析 (AI 視覺辨識, 可選) ───
