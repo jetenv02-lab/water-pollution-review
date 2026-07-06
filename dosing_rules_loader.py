@@ -170,11 +170,12 @@ DRUG_NAME_ALIAS = {
 
 # 藥劑「片段對照」— 用於 step2 排版壞的 case
 # 例 "氫氧化依加藥桶液位鈉" 應該是「氫氧化鈉」被插入了「依加藥桶液位」
-# 判斷: 兩個片段都在 text 中 (順序無所謂)
+# 判斷: 每組 tuple 內全部片段都在 text 中 (順序無所謂)
+# 單字元 tuple 也支援 (例 ("化鈉",) — 用於 PDF 抽取只留末段的 case)
 DRUG_FRAGMENT_ALIAS = {
-    "NaOH": [("氫氧化", "鈉")],
+    "NaOH": [("氫氧化", "鈉"), ("化鈉",)],           # 「化鈉（45」也算 NaOH
     "H2SO4": [("硫", "酸")],
-    "Ca(OH)2": [("氫氧化", "鈣")],
+    "Ca(OH)2": [("氫氧化", "鈣"), ("化鈣",)],         # 「化鈣」也算 Ca(OH)2 (但可能跟 CaCl2 衝突, 見下)
     "CaCl2": [("氯化", "鈣")],
     "FeSO4": [("硫酸", "亞鐵"), ("硫酸", "鐵")],
     "FeCl3": [("氯化", "鐵"), ("三氯化", "鐵")],
@@ -292,14 +293,19 @@ def get_declared_dosing_kg_per_day(unit, drug_key):
 
 def _has_any_declared_dosing(unit):
     """判斷該單元是否有廠商申報「任何加藥量」.
-    掃 measure_params 找有 "加藥" 字眼的欄位, 且值有數字.
+
+    比對條件 (符合任一即可):
+        (1) 欄位名含 "加藥" 二字 + 值有數字
+        (2) 欄位名含任何**藥劑名** (見 DRUG_NAME_ALIAS / DRUG_FRAGMENT_ALIAS) + 值有數字
+            — 用於 PDF 抽取壞版的 case, 例如「化鈉（45」被截斷但仍含「化鈉」片段
+
+    這樣: 廠商申報氫氧化鈉一種就算「有申報」, 我們不再幫他補其他藥的典型值.
     """
     if not isinstance(unit, dict):
         return False
     measure = unit.get("measure_params") or {}
     for pname, pval in measure.items():
-        if "加藥" not in str(pname):
-            continue
+        text = str(pname)
         if not isinstance(pval, dict):
             continue
         try:
@@ -307,8 +313,16 @@ def _has_any_declared_dosing(unit):
             vmax = float(pval.get("max")) if pval.get("max") is not None else None
         except (TypeError, ValueError):
             continue
-        if (vmin is not None and vmin > 0) or (vmax is not None and vmax > 0):
+        has_number = (vmin is not None and vmin > 0) or (vmax is not None and vmax > 0)
+        if not has_number:
+            continue
+        # (1) 有 "加藥" 二字
+        if "加藥" in text:
             return True
+        # (2) 有任何已知藥劑名 (完整別名或片段)
+        for drug_key in DRUG_NAME_ALIAS.keys():
+            if _match_drug_name(text, drug_key):
+                return True
     return False
 
 
