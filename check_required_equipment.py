@@ -75,17 +75,20 @@ def load_required_equipment():
 
 
 EQ_ALIAS = {
-    # 排泥 → 泵浦類/氣動泵都算 (廠商常用 "污泥泵" / "氣動泵" 代替 "排泥泵")
-    "排泥": ["排泥", "污泥泵", "氣動泵", "污泥抽送", "污泥輸送", "污泥排出"],
-    "攪拌機": ["攪拌機", "攪拌器", "攪拌", "混合機"],
-    "加藥機": ["加藥機", "加藥泵", "計量泵", "定量泵"],
-    "pH計": ["pH計", "pH", "酸鹼度", "酸鹼度計"],
+    # 排泥 → 泵浦類/氣動泵/刮泥機都算
+    "排泥": ["排泥", "污泥泵", "氣動泵", "污泥抽送", "污泥輸送", "污泥排出",
+             "刮泥機", "污泥迴流泵", "螺旋輸送", "螺旋泵"],
+    "攪拌機": ["攪拌機", "攪拌器", "攪拌", "混合機", "膠凝機"],
+    "加藥機": ["加藥機", "加藥泵", "計量泵", "定量泵", "藥液泵", "藥劑泵"],
+    # "pH計" 也認「pH 計」(廠商常打中間空格) 及氟離子計 (中和槽同類監控)
+    "pH計": ["pH計", "pH 計", "pH", "酸鹼度", "酸鹼度計", "氟離子計", "離子計"],
     "ORP計": ["ORP", "氧化還原", "還原電位"],
-    "反洗": ["反洗", "逆洗", "backwash", "自動反洗"],
-    "鼓風機": ["鼓風機", "空壓機", "曝氣機"],
-    "液位計": ["液位計", "液位", "液面計", "浮球"],
-    "流量計": ["流量計", "電磁流量", "累計流量"],
-    "再生系統": ["再生", "再生塔", "再生槽"],
+    # 反洗 → 差壓計常用於反洗觸發 (含差壓計代表有反洗系統的 signal)
+    "反洗": ["反洗", "逆洗", "backwash", "自動反洗", "差壓計"],
+    "鼓風機": ["鼓風機", "空壓機", "曝氣機", "送風機"],
+    "液位計": ["液位計", "液位", "液面計", "浮球", "浮球開關"],
+    "流量計": ["流量計", "電磁流量", "累計流量", "積算器"],
+    "再生系統": ["再生", "再生塔", "再生槽", "再生泵"],
 }
 
 
@@ -168,21 +171,110 @@ def check_unit_required_equipment(unit, required_map=None):
     return findings
 
 
-def check_all_units_required_equipment(units, required_map=None):
-    """批次檢查全廠必備機具."""
-    if required_map is None:
-        required_map = load_required_equipment()
+def _collect_series_equipment(units):
+    """收集每個系列 (T01/T02/T03..) 的所有 equipment name.
 
-    findings = []
+    廠商常用共用單元序號登加藥機/攪拌機, step2 沒展開,
+    → 用系列內共享, 若同系列其他單元登了, 該單元 pass.
+    """
+    series_eq = {}  # {series_prefix: set of eq_name}
     if isinstance(units, dict):
         unit_iter = units.values()
     else:
         unit_iter = units
+    for u in unit_iter:
+        if not isinstance(u, dict):
+            continue
+        code = str(u.get("raw_code") or u.get("code_id") or "")
+        if "-" not in code:
+            continue
+        prefix = code.split("-")[0]  # T01, T02, ...
+        eq_list = u.get("equipment") or u.get("equipment_list") or []
+        if prefix not in series_eq:
+            series_eq[prefix] = set()
+        for e in eq_list:
+            if isinstance(e, dict):
+                name = str(e.get("name") or "")
+                if name:
+                    series_eq[prefix].add(name)
+    return series_eq
+
+
+def check_all_units_required_equipment(units, required_map=None):
+    """批次檢查全廠必備機具.
+
+    含系列共用邏輯: 廠商常用「共用單元序號」欄登共用機具,
+    step2 目前沒展開, 所以在此以「系列 (T01, T02..) 共享」近似補償.
+    """
+    if required_map is None:
+        required_map = load_required_equipment()
+
+    # 收集每系列的所有 equipment name (共享)
+    series_eq = _collect_series_equipment(units)
+
+    findings = []
+    if isinstance(units, dict):
+        unit_iter = list(units.values())
+    else:
+        unit_iter = list(units)
 
     for unit in unit_iter:
         if not isinstance(unit, dict):
             continue
-        findings.extend(check_unit_required_equipment(unit, required_map))
+        code = str(unit.get("raw_code") or unit.get("code_id") or "")
+        prefix = code.split("-")[0] if "-" in code else ""
+        series_all_eq = series_eq.get(prefix, set())
+
+        # 拿本單元 + 系列共享 的 equipment 一起檢查
+        eq_self = unit.get("equipment") or unit.get("equipment_list") or []
+        eq_combined = list(eq_self)
+        for name in series_all_eq:
+            # 用 fake dict 加入以便 has_equipment 掃描
+            if not any(isinstance(e, dict) and str(e.get("name") or "") == name
+                       for e in eq_combined):
+                eq_combined.append({"name": name, "_from_series": True})
+
+        # 手動跑一次 check_unit_required_equipment 邏輯 (用 eq_combined 取代 eq_list)
+        std_tank = str(unit.get("std_tank") or "").strip()
+        if not std_tank:
+            continue
+        required = required_map.get(std_tank)
+        if required is None or not required:
+            continue
+        eq_code = unit.get("raw_code") or unit.get("code_id") or "?"
+
+        for req_eq in required:
+            if has_equipment(eq_combined, req_eq):
+                continue
+            hint = EQ_HINT.get(req_eq, "")
+            if not eq_self:
+                findings.append({
+                    "嚴重度": "待確認",
+                    "類型": "機具設施",
+                    "單元": eq_code,
+                    "標準槽體": std_tank,
+                    "對照項目": f"必備機具: {req_eq}",
+                    "描述": (
+                        f"{std_tank} 應具備 {req_eq}, 但單元機具清單完全空白 "
+                        f"(可能 PDF 表格抽取失敗, 或廠商未登載)。"
+                        f"{('學理: ' + hint) if hint else ''} 請人工核對 PDF."
+                    ),
+                    "依據": f"_槽體學理.必備機具 ({std_tank})",
+                })
+            else:
+                findings.append({
+                    "嚴重度": "不合理",
+                    "類型": "機具設施",
+                    "單元": eq_code,
+                    "標準槽體": std_tank,
+                    "對照項目": f"必備機具: {req_eq}",
+                    "描述": (
+                        f"{std_tank} 應具備 {req_eq}, 但單元機具清單未列 "
+                        f"(同系列 {prefix} 也未見)。"
+                        f"{('學理: ' + hint) if hint else ''}"
+                    ),
+                    "依據": f"_槽體學理.必備機具 ({std_tank})",
+                })
 
     return findings
 
