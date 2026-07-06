@@ -257,8 +257,102 @@ def check_discharge_water(water_quality, industry, conditions=None, tank_code=""
     return findings
 
 
+def _find_real_discharge_units(units):
+    """找出真正放流口單元 (廠內流程最末端).
+
+    Nick 定調 (2026-07-06): 不是每個 std_tank = 放流池 都算放流口.
+    例馥廷 T01-15 = 放流暫存槽, 但後面還有 T01-16 砂濾, 才是真正末端.
+
+    判定順序 (由強到弱):
+        1. 名稱含「放流」但不含「暫存/貯存/儲存/中間/緩衝」
+           且 effluent 中至少一條 stream 沒接到其他單元 (真沒下游)
+        2. 若沒有 (1) 命中, 找所有「不是污泥系統」且 effluent stream 沒下游的單元
+        3. 都沒有 → 回舊邏輯的 std_tank='放流池' 兜底
+    """
+    if isinstance(units, dict):
+        unit_dict = units
+    else:
+        unit_dict = {(u.get("raw_code") or u.get("code") or ""): u for u in units}
+
+    # 收集所有 influent 用到的 stream codes (WTB xxxxx)
+    used_by_downstream = set()
+    for u in unit_dict.values():
+        if not isinstance(u, dict):
+            continue
+        inf = u.get("influent") or {}
+        for sc in inf.keys():
+            # WTB01-13-1 對應上游 WTA01-13-1 (只是 B/A 對調)
+            # 但實際上下游是靠 stream_q 或連結表, 這裡簡化用 code 對應
+            used_by_downstream.add(str(sc))
+
+    def _has_no_downstream(unit):
+        """判該單元的 effluent 是否至少一條沒接到下游."""
+        eff = unit.get("effluent") or {}
+        if not eff:
+            return False
+        for sc in eff.keys():
+            sc_str = str(sc)
+            # WTA01-13-1 → 下游會用 WTB01-14-1 (換 A/B), 這裡簡單看有沒有任何單元
+            # 的 influent 引用了這個 stream code 或其對應的 B 版本
+            b_ver = sc_str.replace("WTA", "WTB", 1) if "WTA" in sc_str else sc_str
+            if sc_str not in used_by_downstream and b_ver not in used_by_downstream:
+                return True
+        return False
+
+    # 排除污泥/濾液/脫水類 (不是水流末端)
+    def _is_sludge_or_side(unit):
+        name = str(unit.get("name_in_doc") or "")
+        std = str(unit.get("std_tank") or "")
+        for kw in ["污泥", "脫水", "濾液", "濃縮", "貯泥"]:
+            if kw in name or kw in std:
+                return True
+        return False
+
+    # 排除「暫存/中間」名稱
+    def _is_buffer_only(unit):
+        name = str(unit.get("name_in_doc") or "")
+        # 「放流暫存槽」「中間池」「緩衝槽」等 — 名稱有暫存字眼
+        for kw in ["暫存", "貯存", "儲存", "中間", "緩衝"]:
+            if kw in name:
+                return True
+        return False
+
+    # 條件 1: 名稱含「放流」且不含 buffer 字眼 且 沒下游
+    for code, u in unit_dict.items():
+        if not isinstance(u, dict):
+            continue
+        name = str(u.get("name_in_doc") or "")
+        if "放流" in name and not _is_buffer_only(u) and _has_no_downstream(u):
+            return [(code, u)]
+
+    # 條件 2: 非污泥系統 且 沒下游 (通常是砂濾/活性碳等末端)
+    candidates = []
+    for code, u in unit_dict.items():
+        if not isinstance(u, dict):
+            continue
+        if _is_sludge_or_side(u):
+            continue
+        if _has_no_downstream(u):
+            candidates.append((code, u))
+
+    if candidates:
+        # 選序號最大的 (T01-16 > T01-15)
+        candidates.sort(key=lambda x: str(x[0]))
+        return [candidates[-1]]
+
+    # 兜底: std_tank='放流池' 且不是 buffer
+    for code, u in unit_dict.items():
+        if not isinstance(u, dict):
+            continue
+        std = str(u.get("std_tank") or "")
+        if "放流" in std and not _is_buffer_only(u):
+            return [(code, u)]
+
+    return []
+
+
 def check_all_discharge_units(units, industry, conditions=None):
-    """對所有放流池單元 (std_tank == '放流池') 檢查放流水質。
+    """對真正放流口單元檢查放流水質標準.
 
     Args:
         units: dict[code → unit] 或 list[unit]
@@ -269,21 +363,37 @@ def check_all_discharge_units(units, industry, conditions=None):
         list[finding]
     """
     findings = []
-    if isinstance(units, dict):
-        unit_iter = list(units.items())
-    else:
-        unit_iter = [(u.get("raw_code", "?"), u) for u in units]
+    real_discharge = _find_real_discharge_units(units)
 
-    for code, unit in unit_iter:
+    for code, unit in real_discharge:
         if not isinstance(unit, dict):
             continue
-        std_tank = unit.get("std_tank") or ""
-        if "放流" not in std_tank:
-            continue
-
-        # 從 effluent 拿放流水質 (取加權平均或最大)
+        # 從 effluent 拿放流水質 — 若有多條 stream, 只挑「主流」(Q 最大),
+        # 反洗/濃縮支流等小 Q 支流不算放流水 (它們會回流再處理)
         eff = unit.get("effluent") or {}
-        for stream_code, stream in eff.items():
+        stream_q = unit.get("stream_q") or {}
+
+        def _stream_q_cmd(sc):
+            info = stream_q.get(sc) or {}
+            if isinstance(info, dict):
+                q = info.get("q_cmd")
+                if isinstance(q, (int, float)):
+                    return float(q)
+            return 0.0
+
+        # 挑 Q 最大的一條當放流主流
+        main_stream = None
+        max_q = -1
+        for sc in eff.keys():
+            q = _stream_q_cmd(sc)
+            if q > max_q:
+                max_q = q
+                main_stream = sc
+
+        streams_to_check = [main_stream] if main_stream else list(eff.keys())
+
+        for stream_code in streams_to_check:
+            stream = eff.get(stream_code)
             if not isinstance(stream, dict):
                 continue
             wq = {}
