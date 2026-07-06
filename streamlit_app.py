@@ -895,13 +895,25 @@ with tab1:
                 except Exception as _e_id:
                     print(f"[check_identical 失敗] {_e_id}")
 
+                # ─── 新增: 必備機具檢查 (Nick 2026-07-06) ───
+                # 每個標準槽體有必備機具 (快混=攪拌+加藥, 沉澱=排泥, 砂濾=反洗...)
+                # 這條檢查用 _槽體學理.必備機具 過濾, 只該套的才套
+                findings_required_eq = []
+                try:
+                    from check_required_equipment import check_all_units_required_equipment
+                    findings_required_eq = check_all_units_required_equipment(
+                        app_data_local.get("units") or {}
+                    )
+                except Exception as _e_req:
+                    print(f"[check_required_equipment 失敗] {_e_req}")
+
                 # B+C (2026-07-01): 跨層 dedup
                 # B: 若同單元同時有具體 finding + 通用 finding → 移除通用
                 #    通用特徵: 描述含 "需檢驗/需人工/應保持不變" 等模糊語彙, 且沒具體數字
                 # C: 若同單元有其他 finding + 進=出偷懶 → 進=出併入描述末尾
                 _all_findings = (
                     findings_basic + findings_adv + findings_rule
-                    + findings_rpm + findings_discharge
+                    + findings_rpm + findings_discharge + findings_required_eq
                 )
 
                 _GENERIC_PHRASES = ["需檢驗", "需人工檢視", "多半需人工", "需檢核",

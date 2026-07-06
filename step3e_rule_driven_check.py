@@ -381,22 +381,9 @@ def check_rule_against_unit(rule, unit):
                     deficiency_id, source
                 )
 
-    # ── 3. 機具設施 (液位計/pH計/攪拌機/排泥/流量計/液位/污泥泵...) ──
-    # 防呆: 若 equipment_list 完全空, 可能是 step2 抽表格壞了 (跨頁/共用單元序號)
-    # 這種情況不該對每個 rule 都跳「機具未列 X」— 資料本身缺失, 不是廠商設計缺失
-    eq_keywords = ["液位計", "pH計", "攪拌機", "鼓風機", "流量計", "加藥機",
-                   "污泥泵", "排泥", "反洗", "鼓風機", "電磁式流量計"]
-    for eq_kw in eq_keywords:
-        if eq_kw in target_item or eq_kw in rule_text:
-            if not equipment_list:
-                # 資料層面本來就沒抽到機具, 不對規則做誤觸發判斷
-                continue
-            if not has_equipment(equipment_list, eq_kw):
-                return _make_finding(
-                    "待確認", "機具設施", code, std_tank, target_item,
-                    f"單元機具清單未列 {eq_kw}, 規則: {rule_text[:80]}",
-                    deficiency_id, source
-                )
+    # ── 3. 機具設施 檢查已由 check_required_equipment.py 接管 ──
+    # (Nick 2026-07-06 定調: 用 _槽體學理.必備機具 過濾, 只該套的才套)
+    # 這裡不再對每條 rule 都跳「機具未列 X」, 避免砂濾塔被套「攪拌機未列」等誤觸發
 
     # ── 4. 加藥量 ──
     if "加藥" in target_item or "加藥量" in rule_text or "藥品" in rule_text:
