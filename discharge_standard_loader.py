@@ -274,29 +274,37 @@ def _find_real_discharge_units(units):
     else:
         unit_dict = {(u.get("raw_code") or u.get("code") or ""): u for u in units}
 
-    # 收集所有 influent 用到的 stream codes (WTB xxxxx)
-    used_by_downstream = set()
-    for u in unit_dict.values():
+    # 收集 {unit_code: 其 influent stream codes} — 用於判斷「下游是誰」
+    influent_by_unit = {}
+    for uc, u in unit_dict.items():
         if not isinstance(u, dict):
             continue
-        inf = u.get("influent") or {}
-        for sc in inf.keys():
-            # WTB01-13-1 對應上游 WTA01-13-1 (只是 B/A 對調)
-            # 但實際上下游是靠 stream_q 或連結表, 這裡簡化用 code 對應
-            used_by_downstream.add(str(sc))
+        influent_by_unit[uc] = set(str(sc) for sc in (u.get("influent") or {}).keys())
 
-    def _has_no_downstream(unit):
-        """判該單元的 effluent 是否至少一條沒接到下游."""
+    def _has_no_downstream(unit_code, unit):
+        """判該單元的 effluent 是否至少一條沒接到「其他單元」.
+
+        Note: 廠商 stream code 命名習慣 WTB01-13-1 (T01-13 的 influent)
+              對應 T01-12 的 effluent, 所以 T01-13 的 effluent WTA01-13-1
+              下游可能是 T01-14 的 WTB01-14-1 (不同編號!)
+              → 只能靠「有沒有其他單元的 influent 引用該 stream code」判斷
+              → 由於 A/B 命名習慣, 也試 A↔B 對換
+        """
         eff = unit.get("effluent") or {}
         if not eff:
             return False
         for sc in eff.keys():
             sc_str = str(sc)
-            # WTA01-13-1 → 下游會用 WTB01-14-1 (換 A/B), 這裡簡單看有沒有任何單元
-            # 的 influent 引用了這個 stream code 或其對應的 B 版本
             b_ver = sc_str.replace("WTA", "WTB", 1) if "WTA" in sc_str else sc_str
-            if sc_str not in used_by_downstream and b_ver not in used_by_downstream:
-                return True
+            found_downstream = False
+            for other_code, other_infs in influent_by_unit.items():
+                if other_code == unit_code:
+                    continue  # 排除自己
+                if sc_str in other_infs or b_ver in other_infs:
+                    found_downstream = True
+                    break
+            if not found_downstream:
+                return True  # 此 effluent 找不到下游 → 是放流口
         return False
 
     # 排除污泥/濾液/脫水類 (不是水流末端)
@@ -322,22 +330,31 @@ def _find_real_discharge_units(units):
         if not isinstance(u, dict):
             continue
         name = str(u.get("name_in_doc") or "")
-        if "放流" in name and not _is_buffer_only(u) and _has_no_downstream(u):
+        if "放流" in name and not _is_buffer_only(u) and _has_no_downstream(code, u):
             return [(code, u)]
 
-    # 條件 2: 非污泥系統 且 沒下游 (通常是砂濾/活性碳等末端)
+    # 條件 2: 非污泥系統 且 沒下游 (通常是砂濾/活性碳/中和/pH 等末端調整)
+    # 由於 stream_code 對接可能不完整, 常出現多個都判「無下游」的情況
+    # → 取「序號最大的」當放流口 (廠內流程最後一個處理槽)
     candidates = []
     for code, u in unit_dict.items():
         if not isinstance(u, dict):
             continue
         if _is_sludge_or_side(u):
             continue
-        if _has_no_downstream(u):
+        if _has_no_downstream(code, u):
             candidates.append((code, u))
 
     if candidates:
-        # 選序號最大的 (T01-16 > T01-15)
-        candidates.sort(key=lambda x: str(x[0]))
+        # 選序號最大的 (T01-17 > T01-16 > T01-15)
+        # 排序時取 T01-XX 尾數 (數字大的最後)
+        def _sort_key(item):
+            code = str(item[0])
+            # 抽出末段數字
+            import re
+            m = re.findall(r"\d+", code)
+            return int(m[-1]) if m else 0
+        candidates.sort(key=_sort_key)
         return [candidates[-1]]
 
     # 兜底: std_tank='放流池' 且不是 buffer

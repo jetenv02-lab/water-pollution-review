@@ -28,7 +28,15 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 台灣時區 UTC+8
+_TW_TZ = timezone(timedelta(hours=8))
+
+
+def _now_tw():
+    """回傳台灣本地時間 (UTC+8) — 修 Streamlit Cloud 是 UTC 顯示錯的問題."""
+    return datetime.now(tz=_TW_TZ)
 
 
 # ─────────────────────────────────────────
@@ -275,7 +283,7 @@ def build_internal_excel(app_data: dict, findings: list[dict] | None = None,
         ["項目", "值"],
         ["案件名稱", app_data.get("source_pdf", "")],
         ["業別", opts.get("business_type", "(未指定)")],
-        ["匯出時間", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+        ["匯出時間", _now_tw().strftime("%Y-%m-%d %H:%M:%S")],
         ["", ""],
         ["━━━ 審查結果統計 ━━━", ""],
         ["🔴 不合理", summary["不合理"]],
@@ -554,7 +562,7 @@ def build_vendor_word(app_data: dict, findings: list[dict] | None = None,
     p.add_run("業別: ").bold = True
     p.add_run(str(opts.get("business_type", "(未指定)")) + "\n")
     p.add_run("審查日期: ").bold = True
-    p.add_run(datetime.now().strftime("%Y-%m-%d"))
+    p.add_run(_now_tw().strftime("%Y-%m-%d"))
 
     # 一、待修正項目
     red = [f for f in findings if f.get("嚴重度") == "不合理"]
@@ -671,7 +679,7 @@ def build_integrated_json(app_data: dict, findings: list[dict] | None = None,
     out = {
         "案件": app_data.get("source_pdf", ""),
         "業別": bt,
-        "匯出時間": datetime.now().isoformat(),
+        "匯出時間": _now_tw().isoformat(),
         "統計": {
             "不合理": summary["不合理"],
             "待確認": summary["待確認"],
@@ -709,7 +717,7 @@ def build_integrated_json(app_data: dict, findings: list[dict] | None = None,
 def build_export(target: str, app_data: dict, findings: list[dict] | None = None,
                  options: dict | None = None,
                  base_name: str = "report") -> tuple[bytes, str, str]:
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    ts = _now_tw().strftime("%Y%m%d_%H%M")
     if target == "internal":
         data = build_internal_excel(app_data, findings, options)
         fname = f"{base_name}_內部覆核_{ts}.xlsx"
