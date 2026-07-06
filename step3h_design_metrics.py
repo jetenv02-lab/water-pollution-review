@@ -118,10 +118,13 @@ def get_surface_area(unit):
 
 
 def get_motor_power_w(unit):
-    """從 equipment 中找攪拌機馬力, 轉成 W。
+    """從 equipment 中找**攪拌機**馬力, 轉成 W。
+
+    G 值 (速度梯度) 公式 G = √(P/μV) 用於**機械攪拌**的能量輸入計算.
+    鼓風機是曝氣用 (空氣攪拌, 走 G_air 公式), 不能混入機械 G 值.
+    (Bug fix, 2026-07-06: 舊版把鼓風機也算進去, 導致 T01-08 快混池 G=2021 s⁻¹ 誤觸發)
 
     equipment 結構: [{"name": "攪拌機", "位置": "...", "數量": 1, "馬力_kW": 0.37}, ...]
-    取所有「攪拌機 / 鼓風機」累計, 轉成 W (kW × 1000)。
     """
     total_w = 0.0
     found = False
@@ -129,7 +132,8 @@ def get_motor_power_w(unit):
         if not isinstance(eq, dict):
             continue
         name = str(eq.get("name") or "")
-        if not any(kw in name for kw in ["攪拌", "鼓風"]):
+        # 只算攪拌機; 鼓風機/加藥機/抽水馬達/污泥泵 不是槽體 G 值來源
+        if "攪拌" not in name:
             continue
         kw = to_float(eq.get("馬力_kW"))
         qty = to_float(eq.get("數量")) or 1

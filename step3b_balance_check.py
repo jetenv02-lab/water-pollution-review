@@ -468,29 +468,46 @@ def check_design_metrics(unit):
             })
 
     # ── G 值檢查 (混合槽類) ──
+    # Nick 定調 (2026-07-06): 若廠商已申報「攪拌機轉速 RPM」, 優先用 RPM 判定
+    # (check_rpm 已處理), G 值檢查跳過或降級為參考 —— 因為 G = √(P/μV) 用馬達額定 P
+    # 會系統性偏高 (實際耗功約額定 30~60%), 誤觸發率高.
     g_min = rule.get("G_min")
     g_max = rule.get("G_max")
     if g is not None and (g_min or g_max):
         g_min_v = g_min if g_min is not None else 0
         g_max_v = g_max if g_max is not None else float("inf")
         if g < g_min_v or g > g_max_v:
-            direction = "過低" if g < g_min_v else "過高"
-            warn_extra = ""
-            if g > g_max_v and "慢混" in std_tank:
-                warn_extra = " (慢混 G 過高會打散絮羽, 沉澱失敗)"
-            findings.append({
-                "嚴重度": sev,
-                "類型": "設計參數",
-                "單元": code,
-                "標準槽體": std_tank,
-                "對照項目": "G 值 (速度梯度)",
-                "描述": (
-                    f"G = {g:.0f} s⁻¹, {direction}。"
-                    f"學理範圍 {g_min_v} ~ {g_max_v} s⁻¹。{warn_extra}"
-                    f" (P={metrics['motor_power_w']:.0f} W, V={metrics['volume_m3']:.2f} m³)"
-                ),
-                "依據": "_槽體學理 G 值範圍 + 環工設計準則",
-            })
+            # 檢查是否已有 RPM 申報
+            has_rpm = False
+            try:
+                import check_rpm as _crpm
+                if _crpm._find_rpm_in_params(unit.get("design_params") or {}) or \
+                   _crpm._find_rpm_in_params(unit.get("measure_params") or {}):
+                    has_rpm = True
+            except Exception:
+                pass
+            if has_rpm:
+                # 有 RPM → 讓 check_rpm 主導, 此處不再重複出 finding
+                pass
+            else:
+                direction = "過低" if g < g_min_v else "過高"
+                warn_extra = ""
+                if g > g_max_v and "慢混" in std_tank:
+                    warn_extra = " (慢混 G 過高會打散絮羽, 沉澱失敗)"
+                findings.append({
+                    "嚴重度": sev,
+                    "類型": "設計參數",
+                    "單元": code,
+                    "標準槽體": std_tank,
+                    "對照項目": "G 值 (速度梯度)",
+                    "描述": (
+                        f"G = {g:.0f} s⁻¹, {direction}。"
+                        f"學理範圍 {g_min_v} ~ {g_max_v} s⁻¹。{warn_extra}"
+                        f" (P={metrics['motor_power_w']:.0f} W, V={metrics['volume_m3']:.2f} m³)"
+                        f" 註: 廠商未申報 RPM, 以馬達額定 P 反推 G 值僅供參考."
+                    ),
+                    "依據": "_槽體學理 G 值範圍 + 環工設計準則",
+                })
 
     return findings
 
