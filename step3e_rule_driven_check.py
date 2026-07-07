@@ -346,6 +346,15 @@ def check_rule_against_unit(rule, unit):
                        "污泥迴流率", "迴流率", "MLSS", "DO", "溶氧", "F/M", "食微比",
                        "濾速", "上升流速", "體積負荷", "有機負荷", "攪拌"]:
         if design_key in target_item or design_key in rule_text:
+            # Nick 2026-07-07: 跨槽對比類規則 skip
+            # 例 D041a「快混與慢混槽之水力停留時間應有區隔」→ 只有廠內有配對槽才適用
+            # 此處只有單 unit context, 無法跨槽比較 → 保守 skip
+            # (真要抓需要專門的跨單元檢查, 不該在單槽 dispatch 這裡處理)
+            if "快混" in rule_text and "慢混" in rule_text:
+                continue
+            if "沉澱" in rule_text and "濃縮" in rule_text and design_key == "污泥迴流率":
+                continue
+
             lo, hi, pname = get_param_range({**design_params, **measure_params}, design_key)
             if pname:
                 # 「轉速應為固定值而非範圍值」規則 (陳映嘉 D090b):
