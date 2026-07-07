@@ -636,7 +636,7 @@ def run_balance_checks(app_data):
         check_fast_mix_metal_removal,
         check_tank_chemistry,            # 槽體學理規則 (規則庫驅動)
         check_settling_overflow_rate,
-        check_required_equipment,
+        # check_required_equipment,      # 已由 check_required_equipment 模組接管 (Nick 2026-07-07)
         check_quality_table_consistency, # 水質表 Q 反推一致性
         check_design_metrics,            # 新: HRT / SOR / G 值體檢
     ]
