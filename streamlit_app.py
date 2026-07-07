@@ -947,6 +947,46 @@ with tab1:
                         continue
                     _kept_findings.append(_f)
 
+                # D (Nick 2026-07-07): 水質表 Q 反推 findings 全廠同 spread_pct 合併
+                # 若廠商用同一範本填寫, 每條 stream 都出 1 條 finding 太多
+                # → 若 3+ 條 spread% 差 < 0.5 (共通) → 保 1 條全廠總結
+                import re as _re
+                _qtb_findings = []
+                _qtb_other = []
+                for _f in _kept_findings:
+                    _t = str(_f.get("對照項目") or "")
+                    if _t.startswith("水質表 WT") and "反推" in str(_f.get("描述") or ""):
+                        _qtb_findings.append(_f)
+                    else:
+                        _qtb_other.append(_f)
+                if len(_qtb_findings) >= 3:
+                    # 抽 spread_pct 判是否一致
+                    _spreads = []
+                    for _f in _qtb_findings:
+                        _m = _re.search(r"差異\s*(\d+\.?\d*)%", str(_f.get("描述") or ""))
+                        if _m:
+                            _spreads.append(float(_m.group(1)))
+                    if _spreads and max(_spreads) - min(_spreads) < 0.5:
+                        # 全廠同 pattern → 合成 1 條總結
+                        _units_affected = sorted(set(_f.get("單元") for _f in _qtb_findings if _f.get("單元")))
+                        _summary = {
+                            "嚴重度": _qtb_findings[0].get("嚴重度", "待確認"),
+                            "類型": "文件一致性",
+                            "單元": f"全廠 ({len(_units_affected)} 單元)",
+                            "標準槽體": "多單元",
+                            "對照項目": "全廠水質表 Q 反推一致性",
+                            "描述": (
+                                f"廠內 {len(_qtb_findings)} 條水質表 stream 的「質量÷濃度」"
+                                f"反推 Q 差異都是 {_spreads[0]:.1f}% (共通值), "
+                                f"疑廠商使用同一範本填寫, 質量欄未依實際單元計算。"
+                                f"影響單元: {', '.join(_units_affected[:6])}"
+                                f"{('...' if len(_units_affected)>6 else '')}。"
+                                f"建議廠商依實際流量重新計算各項水質質量。"
+                            ),
+                            "依據": "質量守恆 + 水質表填寫一致性",
+                        }
+                        _kept_findings = _qtb_other + [_summary]
+
                 # C: 進=出偷懶 — 同單元有其他 finding 就併入描述, 沒有就獨立列
                 _identical_standalone = []
                 _identical_annotations = {}
