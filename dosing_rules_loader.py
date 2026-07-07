@@ -364,9 +364,10 @@ def compute_chemical_mass(unit, item, q_cmd=None):
                 if isinstance(q, (int, float)):
                     q_cmd += float(q)
 
-    # v3: 判斷該槽有沒有廠商申報「任何」加藥
-    has_declared = _has_any_declared_dosing(unit)
-
+    # v4 (Nick 2026-07-07): 廠商沒申報 kg/d 時, 不再自動用典型值 fallback
+    # 原因: 典型值多藥累加會爆掉 (T04-08 pH調整槽 沒申報 → 3 藥典型值 →
+    #      Ca(OH)2 60 + 活性碳 100 + CaCl2 50 = 232 kg/d SS → 誤判 SS 減 80%)
+    # 廠商沒申報加藥的問題交給 step3d/e (加藥機制) 檢查, 不靠質量平衡撈
     total = 0.0
     for entry in entries:
         # 找該藥劑對該水質項目的轉換係數
@@ -377,19 +378,10 @@ def compute_chemical_mass(unit, item, q_cmd=None):
                 break
         if item_coef <= 0:
             continue
-
-        # 讀廠商申報
+        # 只用廠商實際申報的 kg/d 值 (v4: 拿掉典型值 fallback)
         declared_kg, _pct = get_declared_dosing_kg_per_day(unit, entry["drug"])
         if declared_kg is not None and declared_kg > 0:
-            # 廠商申報值 (kg/d 純物質) × 轉換係數 = kg/d 引入項目
             total += declared_kg * item_coef
-        elif not has_declared:
-            # v3: 只有在該槽「完全沒任何申報」時, 才 fallback 典型值
-            if not q_cmd or q_cmd <= 0:
-                continue
-            # mg/L × m³/d / 1000 × 轉換係數 = kg/d
-            total += entry["mg_per_L"] * q_cmd / 1000.0 * item_coef
-        # else: 廠商有申報 A 但沒申報 B, 別幫 B 補典型值 → 跳過
     return total
 
 
@@ -418,29 +410,19 @@ def describe_chemical_contribution(unit, item, q_cmd=None):
                 if isinstance(q, (int, float)):
                     q_cmd += float(q)
 
-    # v3: 若該槽有廠商申報, 就只用申報值 (別提典型值)
-    has_declared = _has_any_declared_dosing(unit)
-
+    # v4 (Nick 2026-07-07): 只描述廠商真正申報的加藥, 不再幫他猜典型值
     parts = []
     total = 0.0
     for entry in entries:
         for it, coef in zip(entry["items"], entry["coefs"]):
             if it != item or coef <= 0:
                 continue
-            # 優先讀廠商申報
             declared_kg, pct = get_declared_dosing_kg_per_day(unit, entry["drug"])
             if declared_kg is not None and declared_kg > 0:
                 added = declared_kg * coef
                 parts.append(
                     f"{entry['drug']} 廠商申報 {declared_kg:.2f}kg/d純物質"
                     f"(@{pct:.0f}%)×{coef}={added:.1f}"
-                )
-                total += added
-            elif not has_declared and q_cmd and q_cmd > 0:
-                # 只有完全沒申報時才用典型值
-                added = entry["mg_per_L"] * q_cmd / 1000.0 * coef
-                parts.append(
-                    f"{entry['drug']} 典型 {entry['mg_per_L']}mg/L×{coef}={added:.1f}"
                 )
                 total += added
 

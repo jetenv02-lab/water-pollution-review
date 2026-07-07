@@ -300,6 +300,41 @@ def check_unit(unit, rules=None):
     if not influent or not effluent:
         return []
 
+    # Nick 2026-07-07: 前置 Q 守恆檢查
+    # 若該單元 Σ進流 Q ≠ Σ出流 Q 差 > 25%, 質量平衡的結論就不可信
+    # (T02-02 Q 進 5886 vs 出 1580 = 減 73% → 每項水質質量都自動 -73%)
+    # 這種情況只留 step3d 的 1 條 Q 守恆 finding, 不再逐項報質量不平衡
+    #
+    # 閾值 25% 的取捨:
+    #   沉澱池排泥常 5~20% Q 損, 這 20% 內的質量差是合理排泥, 該留 finding
+    #   > 25% 的差就是水質表填錯, 質量平衡 finding 全都是 Q 差造成的次生問題
+    stream_q = unit.get("stream_q") or {}
+    sum_in_q = 0.0
+    sum_out_q = 0.0
+    for sc in influent.keys():
+        info = stream_q.get(sc) or {}
+        q = _to_float(info.get("q_cmd")) if isinstance(info, dict) else None
+        if q is not None and q > 0:
+            sum_in_q += q
+    for sc in effluent.keys():
+        info = stream_q.get(sc) or {}
+        q = _to_float(info.get("q_cmd")) if isinstance(info, dict) else None
+        if q is not None and q > 0:
+            sum_out_q += q
+    if sum_in_q > 0 and sum_out_q > 0:
+        q_diff_pct = abs(sum_in_q - sum_out_q) / max(sum_in_q, sum_out_q) * 100
+        if q_diff_pct > 25.0:
+            return []
+        # 沉澱/污泥/濃縮類槽體 Q 進 > 出 是正常 (排泥帶走 Q), 質量差 ≈ Q 差 都算合理
+        if q_diff_pct > 5.0:
+            _sludge_kws = ["沉澱", "沉降", "濃縮", "浮除", "污泥", "脫水",
+                           "濾液", "分離", "反洗"]
+            _tank_name = str(std_tank or "") + str(unit.get("name_in_doc") or "")
+            if any(kw in _tank_name for kw in _sludge_kws):
+                # 沉澱類: Q 進 > 出 是排泥/浮渣造成, 質量減少也合理, skip
+                if sum_in_q > sum_out_q:
+                    return []
+
     # 收集所有水質項目
     all_items = set()
     for stream in list(influent.values()) + list(effluent.values()):
