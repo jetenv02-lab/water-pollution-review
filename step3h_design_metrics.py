@@ -163,27 +163,52 @@ def get_declared_hrt_hr(unit):
 
     如果廠商寫「4.1 分」回 0.068, 寫「8 小時」回 8.0。
     讀不到回 None。
+
+    Nick 2026-07-07: 廠商 PDF 常寫「停留時間」而非「水力停留時間」,
+    → 掃 design_params/measure_params 找任何含「停留時間」的 key
     """
-    dp = unit.get("design_params") or {}
-    hrt_entry = dp.get("水力停留時間") or dp.get("水力停留時間 (HRT)")
-    if not hrt_entry or not isinstance(hrt_entry, dict):
-        return None
-    raw = str(hrt_entry.get("raw") or "")
-    # 取 min 或 max
-    val = hrt_entry.get("min") or hrt_entry.get("max")
-    if val is None:
-        return None
-    try:
-        v = float(val)
-    except (TypeError, ValueError):
-        return None
-    # 判斷單位 (分/小時/日)
-    if "分" in raw or "min" in raw.lower():
-        return v / 60.0
-    if "日" in raw or "天" in raw or "d" in raw.lower() and "min" not in raw.lower():
-        return v * 24.0
-    # 預設小時
-    return v
+    for src in (unit.get("design_params") or {}, unit.get("measure_params") or {}):
+        for key, entry in src.items():
+            if "停留時間" not in str(key):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            raw = str(entry.get("raw") or "")
+            # 取 min 或 max (優先 min, 因為廠商常填 min 當設計值)
+            val = entry.get("min")
+            if val is None:
+                val = entry.get("max")
+            if val is None:
+                continue
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                continue
+            # 判斷單位 (分/小時/日) — 只看「值後面緊接的單位」, 避免計算式誤判
+            # 例: raw = "3.6~ 小時 10.96m3 ÷ 36.3525CMD × 12小時/天"
+            # 應該讀「3.6 小時」不是「3.6 天」
+            # 策略: 找數字後第一個單位詞
+            import re as _re
+            m = _re.search(r"([\d.]+)\s*(分|min|小時|hr|hour|日|天|day)", raw, _re.IGNORECASE)
+            if m:
+                unit_word = m.group(2).lower()
+                if unit_word in ("分", "min"):
+                    return v / 60.0
+                if unit_word in ("小時", "hr", "hour"):
+                    return v
+                if unit_word in ("日", "天", "day"):
+                    return v * 24.0
+            # fallback: 若整個 raw 只提到單一單位
+            has_min = ("分" in raw and "分子" not in raw) or "min" in raw.lower()
+            has_hour = "小時" in raw or "hr" in raw.lower()
+            has_day = "日" in raw or "天" in raw
+            if has_min and not has_hour and not has_day:
+                return v / 60.0
+            if has_day and not has_hour and not has_min:
+                return v * 24.0
+            # 預設小時
+            return v
+    return None
 
 
 def compute_hrt(unit, mode="declared_first"):
